@@ -22,9 +22,9 @@
   (assert (> points-count 1) "curve needs at least 2 points")
   (assert (not (and drop-first? drop-last?)) "Either drop-first? or drop-last? is supported, not both")
   (let [denominator (if (or drop-first? drop-last?) points-count (dec points-count))]
-    (keep (comp curve-fn #(/ % denominator))
-          (range (if drop-first? 1 0)
-                 (if drop-first? (inc points-count) points-count)))))
+    (map (comp curve-fn #(/ % denominator))
+         (range (if drop-first? 1 0)
+                (if drop-first? (inc points-count) points-count)))))
 
 (defn- parameter-assertion [t]
   (assert (>= 1 t 0) "parameter `t` has to be in (inclusive) range [0 1]"))
@@ -96,18 +96,19 @@
                     (vectors/scalar-multiply point-2 coefficient))])
     (de-boor t (map (partial de-boor t) (partition 2 1 span-cp-tuples)))))
 
-(defn- resolve-bspline-point [t span-cp-tuples minimal-cps]
-  (let [effective-span-cp-tuples (parameter->effective-curve t span-cp-tuples)]
-    (when (>= (count effective-span-cp-tuples) minimal-cps)
-      (second (de-boor t effective-span-cp-tuples)))))
+(defn- resolve-bspline-point [t span-cp-tuples [from to]]
+  (let [effective-t (+ (* t (- to from)) from)]
+    (->> (parameter->effective-curve effective-t span-cp-tuples)
+         (de-boor effective-t)
+         second)))
 
-(defrecord BSplineCurve [span-cp-tuples minimal-cps]
+(defrecord BSplineCurve [span-cp-tuples effective-span]
   protocols/PParametricCurve
   (point [_ t]
     (parameter-assertion t)
-    (resolve-bspline-point t span-cp-tuples minimal-cps))
+    (resolve-bspline-point t span-cp-tuples effective-span))
   (points [_ points-count]
-    (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples minimal-cps))))
+    (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples effective-span))))
 
 (defn- b-spline-assertions [{:keys [control-points knot-vector order]}]
   (let [control-points-count (count control-points)
@@ -129,7 +130,7 @@
   {:span-cp-tuples (map vector
                         (map (juxt first last) (partition (+ order 2) 1 knot-vector))
                         control-points)
-   :minimal-cps    (inc order)})
+   :effective-span [(nth knot-vector order) (nth knot-vector (count control-points))]})
 
 (defn b-spline
   "Creates new b-spline curve"
