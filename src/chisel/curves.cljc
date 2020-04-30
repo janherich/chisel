@@ -1,5 +1,5 @@
 (ns chisel.curves
-  "Various curve implementations"
+  "Various curve/patch implementations"
   (:require [chisel.protocols :as protocols]
             [chisel.coordinates :as c]))
 
@@ -166,35 +166,26 @@
   [opts]
   (b-spline (clamp-knot-vector opts)))
 
-(defn elliptic-curve
-  [a b]
-  (clamped-b-spline
-   {:control-points [[0 b]
-                     [a b]
-                     (c/euclidian->homogenous [a 0] 2)
-                     [a (unchecked-negate b)]
-                     [0 (unchecked-negate b)]
-                     [(unchecked-negate a) (unchecked-negate b)]
-                     (c/euclidian->homogenous [(unchecked-negate a) 0] 2)
-                     [(unchecked-negate a) b]
-                     [0 b]]
-    :knot-vector [1/4 1/4 2/4 2/4 3/4 3/4]
-    :order 2}))
-
-(defrecord BezierPatch [control-curves]
+(defrecord TensorProductPatch [slice-fn control-curves]
   protocols/PParametricPatch
   (slice-points [_ t slice-points-count]
     (protocols/points
-     (bezier-curve (map #(protocols/point % t)
-                        control-curves))
+     (slice-fn (map #(protocols/point % t)
+                    control-curves))
      slice-points-count))
   (patch-points [this slice-points-count slices-count]
     (resolve-curve slices-count #(protocols/slice-points this % slice-points-count))))
 
+(defn tensor-product-patch
+  "Creates new tensor product patch"
+  [slice-fn control-curves]
+  (map->TensorProductPatch {:slice-fn       slice-fn
+                            :control-curves control-curves}))
+
 (defn bezier-patch
   "Creates new bezier patch"
   [control-curves]
-  (->BezierPatch control-curves))
+  (tensor-product-patch bezier-curve control-curves))
 
 (defrecord CompositeBezierPatch [control-curve-sequences]
   protocols/PParametricPatch
@@ -241,9 +232,9 @@
    (os/generate-polygon
     (protocols/points
      (composite-bezier-curve [[[-80 0] [-80 2] [-10 5] [0 5]]
-                             [[0 5] [25 5] [70 2] [70 0]]
-                             [[70 0] [70 -2] [25 -5] [0 -5]]
-                             [[0 -5] [-10 -5] [-80 -2] [-80 0]]])
+                              [[0 5] [25 5] [70 2] [70 0]]
+                              [[70 0] [70 -2] [25 -5] [0 -5]]
+                              [[0 -5] [-10 -5] [-80 -2] [-80 0]]])
      1000)))
   ;; Inverted bow yacht hull
   (os/write
