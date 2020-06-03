@@ -4,43 +4,88 @@
             [chisel.protocols :as protocols]
             [chisel.coordinates :as c]))
 
+(def ^:const WEIGHT_90 (Math/sin (/ Math/PI 4)))
+
 (defn elliptic-curve
-  [center a b]
-  (let [diff-a (c/diff-vectors a center)
-        diff-b (c/diff-vectors b center)]
+  "B-Spline elliptic curve"
+  [center a b & {:keys [section] :or {section :full}}]
+  (let [center->a (c/difference a center)
+        center->b (c/difference b center)
+        knot-vector (cond
+                      (= :quarter section) []
+                      (= :half section)    [1/2 1/2]
+                      (= :full section)    [1/4 1/4 2/4 2/4 3/4 3/4])]
     (curves/clamped-b-spline
-     {:control-points [b
-                       (c/add-vectors center diff-a diff-b)
-                       (c/euclidian->homogenous a 2)
-                       (c/add-vectors center diff-a (c/opposite-vector diff-b))
-                       (c/add-vectors center (c/opposite-vector diff-b))
-                       (c/add-vectors center (c/opposite-vector diff-a) (c/opposite-vector diff-b))
-                       (c/euclidian->homogenous (c/add-vectors center (c/opposite-vector diff-a)) 2)
-                       (c/add-vectors center (c/opposite-vector diff-a) diff-b)
-                       b]
-      :knot-vector [1/4 1/4 2/4 2/4 3/4 3/4]
+     {:control-points (cond-> [b
+                               (c/weighted (c/sum center center->a center->b)
+                                           WEIGHT_90)
+                               a]
+                        (or (= :half section)
+                            (= :full section))
+                        (into [(c/weighted (c/sum center center->a (c/opposite-vector center->b))
+                                           WEIGHT_90)
+                               (c/sum center (c/opposite-vector center->b))])
+                        (= :full section)
+                        (into [(c/weighted (c/sum center (c/opposite-vector center->a) (c/opposite-vector center->b))
+                                           WEIGHT_90)
+                               (c/sum center (c/opposite-vector center->a))
+                               (c/weighted (c/sum center (c/opposite-vector center->a) center->b)
+                                           WEIGHT_90)
+                               b]))
+      :knot-vector knot-vector
       :order 2})))
 
+(defn circle-arc
+  "Weighted coordinates for circle arc"
+  [a b degrees & {:keys [counterclockwise?]}]
+  (if (>= degrees 180)
+    (let [half-angle      (/ degrees 2)
+          alpha           (Math/toRadians (/ (- 360 degrees) 2))
+          a->b            (c/difference a b)
+          half-base       (/ (c/vector-length a->b) 2)
+          base-c-distance (+ (/ half-base (Math/tan alpha))
+                             (/ half-base (Math/sin alpha)))
+          c               (c/linear-transform
+                           (c/linear-combination 1/2 a b)
+                           (c/translate-matrix
+                            (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)
+                                            base-c-distance)))]
+      (into (circle-arc a c half-angle :counterclockwise? counterclockwise?)
+            (circle-arc c b half-angle :counterclockwise? counterclockwise?)))
+    (let [alpha        (Math/toRadians (/ (- 180 degrees) 2))
+          a->b         (c/difference a b)
+          a-b-distance (c/vector-length a->b)
+          heigth       (/ a-b-distance (Math/tan alpha) 2)]
+      [[a
+        (c/weighted
+         (c/linear-transform
+          (c/linear-combination 1/2 a b)
+          (c/translate-matrix
+           (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)
+                           heigth)))
+         (Math/sin alpha))
+        b]])))
+
 (def torus
-  (let [curves [(elliptic-curve [0 0 0] [0 100 0] [100 0 0])
-                (elliptic-curve [0 0 5] [0 100 5] [100 0 5])
-                (elliptic-curve [0 0 0] [0 125 0] [125 0 0])]]
+  (let [curves [(elliptic-curve (c/v [0 0 0]) (c/v [0 100 0]) (c/v [100 0 0]))
+                (elliptic-curve (c/v [0 0 5]) (c/v [0 100 5]) (c/v [100 0 5]))
+                (elliptic-curve (c/v [0 0 0]) (c/v [0 125 0]) (c/v [125 0 0]))]]
     (curves/tensor-product-patch #(apply elliptic-curve %) curves)))
 
 (def half-torus
   (let [curves [(curves/composite-bezier-curve
-                 [[[-50 0 0] [-50 20 0]]
-                  [[-50 20 0] (c/euclidian->homogenous [-50 70 0] 0.707) [0 70 0]]
-                  [[0 70 0] (c/euclidian->homogenous [50 70 0] 0.707) [50 20 0]]
-                  [[50 20 0] [50 0 0]]])
+                 [[(c/v [-50 0 0]) (c/v [-50 20 0])]
+                  [(c/v [-50 20 0]) (c/weighted (c/v [-50 70 0]) 0.707) (c/v [0 70 0])]
+                  [(c/v [0 70 0]) (c/weighted (c/v [50 70 0]) 0.707) (c/v [50 20 0])]
+                  [(c/v [50 20 0]) (c/v [50 0 0])]])
                 (curves/composite-bezier-curve
-                 [[[-50 0 23] [-50 20 23]]
-                  [[-50 20 23] (c/euclidian->homogenous [-50 70 23] 0.707) [0 70 23]]
-                  [[0 70 23] (c/euclidian->homogenous [50 70 23] 0.707) [50 20 23]]
-                  [[50 20 23] [50 0 23]]])
+                 [[(c/v [-50 0 23]) (c/v [-50 20 23])]
+                  [(c/v [-50 20 23]) (c/weighted (c/v [-50 70 23]) 0.707) (c/v [0 70 23])]
+                  [(c/v [0 70 23]) (c/weighted (c/v [50 70 23]) 0.707) (c/v [50 20 23])]
+                  [(c/v [50 20 23]) (c/v [50 0 23])]])
                 (curves/composite-bezier-curve
-                 [[[-73 0 0] [-73 20 0]]
-                  [[-73 20 0] (c/euclidian->homogenous [-73 93 0] 0.707) [0 93 0]]
-                  [[0 93 0] (c/euclidian->homogenous [73 93 0] 0.707) [73 20 0]]
-                  [[73 20 0] [73 0 0]]])]]
+                 [[(c/v [-73 0 0]) (c/v [-73 20 0])]
+                  [(c/v [-73 20 0]) (c/weighted (c/v [-73 93 0]) 0.707) (c/v [0 93 0])]
+                  [(c/v [0 93 0]) (c/weighted (c/v [73 93 0]) 0.707) (c/v [73 20 0])]
+                  [(c/v [73 20 0]) (c/v [73 0 0])]])]]
     (curves/tensor-product-patch #(apply elliptic-curve %) curves)))

@@ -5,13 +5,21 @@
 
 (defrecord ConstantCurve [point]
   protocols/PParametricCurve
-  (point [_ _] (protocols/project point))
-  (points [_ points-count] (repeat points-count (protocols/project point))))
+  (point [_ _] point)
+  (points [_ points-count] (repeat points-count point))
+  (closed? [_] true)
+  protocols/PTransformable
+  (linear-transform [_ matrix]
+    (update :point #(protocols/linear-transform % matrix))))
+
+(defn- control-point-assertion [cp]
+  (assert (c/valid-point? cp) "control point must be a vector of numbers with size 4"))
 
 (defn constant-curve
   "Constant curve, which always resolves to fixed point.
   Useful when creating degenerate surface patches, etc."
   [point]
+  (control-point-assertion point)
   (ConstantCurve. point))
 
 (defn de-casteljau
@@ -19,8 +27,7 @@
   from parameter `t` and sequence of `control-points`"
   [t [point-1 point-2 :as control-points]]
   (if (= 2 (count control-points))
-    (c/add-coordinates (c/scalar-multiply-coordinates point-1 (- 1 t))
-                       (c/scalar-multiply-coordinates point-2 t))
+    (c/linear-combination t point-1 point-2)
     (de-casteljau t (map (partial de-casteljau t) (partition 2 1 control-points)))))
 
 (defn resolve-curve
@@ -44,16 +51,19 @@
   protocols/PParametricCurve
   (point [_ t]
     (parameter-assertion t)
-    (protocols/project (de-casteljau t control-points)))
+    (c/project (de-casteljau t control-points)))
   (points [_ points-count]
-    (resolve-curve points-count #(protocols/project (de-casteljau % control-points)))))
+    (resolve-curve points-count #(c/project (de-casteljau % control-points))))
+  (closed? [_]
+    (= (first control-points) (last control-points)))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :control-points #(map (fn [cp] (protocols/linear-transform cp matrix)) %))))
 
 (defn- control-points-assertions [control-points]
   (assert (> (count control-points) 1)
           "at least two `control-points` are required for Bezier curve")
-  (assert (every? (partial satisfies? protocols/PHomogenousCoordinate)
-                  control-points)
-          "`control-points` needs to be sequence of homogenous coordinates"))
+  (doall (map control-point-assertion control-points)))
 
 (defn bezier-curve
   "Creates new bezier curve"
@@ -68,7 +78,7 @@
                                    [(last control-points-sequence) 1]
                                    [(nth control-points-sequence (quot t cps-ratio))
                                     (/ (rem t cps-ratio) cps-ratio)])]
-    (protocols/project (de-casteljau local-t control-points))))
+    (c/project (de-casteljau local-t control-points))))
 
 (defrecord CompositeBezierCurve [control-points-sequence]
   protocols/PParametricCurve
@@ -76,13 +86,23 @@
     (parameter-assertion t)
     (resolve-composite-curve-point t control-points-sequence))
   (points [_ points-count]
-    (resolve-curve points-count #(resolve-composite-curve-point % control-points-sequence))))
+    (resolve-curve points-count #(resolve-composite-curve-point % control-points-sequence)))
+  (closed? [_]
+    (= (ffirst control-points-sequence)
+       (last (last control-points-sequence))))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :control-points-sequence
+            #(map (fn [control-points]
+                    (map (fn [cp] (protocols/linear-transform cp matrix))
+                         control-points)) %))))
 
 (defn- control-points-sequence-assertions [control-points-sequence]
   (doall (map control-points-assertions control-points-sequence))
-  (assert (= (rest (map first control-points-sequence))
-             (butlast (map last control-points-sequence)))
-          "control points in the `control-points-sequence` need to be connected"))
+  (when (> (count control-points-sequence) 1)
+    (assert (= (rest (map first control-points-sequence))
+               (butlast (map last control-points-sequence)))
+            "control points in the `control-points-sequence` need to be connected")))
 
 (defn composite-bezier-curve
   "Creates new composite bezier curve"
@@ -104,8 +124,7 @@
     (= 2 (count span-cp-tuples))
     (let [coefficient (/ (- t from) (- to from))]
       [[from to]
-       (c/add-coordinates (c/scalar-multiply-coordinates point-1 (- 1 coefficient))
-                          (c/scalar-multiply-coordinates point-2 coefficient))])
+       (c/linear-combination coefficient point-1 point-2)])
     (= 1 (count span-cp-tuples))
     (first span-cp-tuples)
     :else
@@ -116,7 +135,7 @@
     (->> (parameter->effective-curve effective-t span-cp-tuples)
          (de-boor effective-t)
          second
-         protocols/project)))
+         c/project)))
 
 (defrecord BSplineCurve [span-cp-tuples effective-span]
   protocols/PParametricCurve
@@ -124,7 +143,15 @@
     (parameter-assertion t)
     (resolve-bspline-point t span-cp-tuples effective-span))
   (points [_ points-count]
-    (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples effective-span))))
+    (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples effective-span)))
+  (closed? [_]
+    (and (= [0 1] effective-span)
+         (= (last (first span-cp-tuples))
+            (last (last span-cp-tuples)))))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :span-cp-tuples
+            #(mapv (fn [[span cp]] [span (protocols/linear-transform cp matrix)]) %))))
 
 (defn- b-spline-assertions [{:keys [control-points knot-vector order]}]
   (let [control-points-count (count control-points)
@@ -174,7 +201,10 @@
                     control-curves))
      slice-points-count))
   (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count))))
+    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :control-curves #(map (fn [cc] (protocols/linear-transform cc matrix)) %))))
 
 (defn tensor-product-patch
   "Creates new tensor product patch"
@@ -197,7 +227,13 @@
                                   control-curve-sequences))
      slice-points-count))
   (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count))))
+    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :control-curve-sequences
+            #(map (fn [control-curves]
+                    (map (fn [cc] (protocols/linear-transform cc matrix))
+                         control-curves)) %))))
 
 (defn composite-bezier-patch
   "Creates new composite bezier patch"
@@ -213,7 +249,10 @@
                 :order          order})
      slice-points-count))
   (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count))))
+    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :control-curves #(map (fn [cc] (protocols/linear-transform cc matrix)) %))))
 
 (defn b-spline-patch
   "Creates new b-spline patch"
@@ -227,14 +266,15 @@
 
 (comment
   (require '[chisel.open-scad :as os])
+  (require '[chisel.stl :as stl])
   ;; Fast surf-ski hull planform
   (os/write
    (os/generate-polygon
     (protocols/points
-     (composite-bezier-curve [[[-80 0] [-80 2] [-10 5] [0 5]]
-                              [[0 5] [25 5] [70 2] [70 0]]
-                              [[70 0] [70 -2] [25 -5] [0 -5]]
-                              [[0 -5] [-10 -5] [-80 -2] [-80 0]]])
+     (composite-bezier-curve [[(c/v [-80 0]) (c/v [-80 2]) (c/v [-10 5]) (c/v [0 5])]
+                              [(c/v [0 5]) (c/v [25 5]) (c/v [70 2]) (c/v [70 0])]
+                              [(c/v [70 0]) (c/v [70 -2]) (c/v [25 -5]) (c/v [0 -5])]
+                              [(c/v [0 -5]) (c/v [-10 -5]) (c/v [-80 -2]) (c/v [-80 0])]])
      1000)))
   ;; Inverted bow yacht hull
   (os/write
@@ -242,10 +282,10 @@
     (os/extrude-between-polygons
      (protocols/patch-points
       (bezier-patch
-       [(bezier-curve [[5 0 0] [-5 0 50] [1 0 100]])
-        (bezier-curve [[5 10 -5] [-5 12 50] [1 5 95]])
-        (bezier-curve [[5 10 -5] [15 12 50] [9 5 95]])
-        (bezier-curve [[5 0 0] [15 0 50] [9 0 100]])])
+       [(bezier-curve [(c/v [5 0 0]) (c/v [-5 0 50]) (c/v [1 0 100])])
+        (bezier-curve [(c/v [5 10 -5]) (c/v [-5 12 50]) (c/v [1 5 95])])
+        (bezier-curve [(c/v [5 10 -5]) (c/v [15 12 50]) (c/v [9 5 95])])
+        (bezier-curve [(c/v [5 0 0]) (c/v [15 0 50]) (c/v [9 0 100])])])
       100 100))))
   ;; Fast surf-ski hull
   (os/write
@@ -254,19 +294,19 @@
      (protocols/patch-points
       (bezier-patch
        [(composite-bezier-curve
-         [[[-80 0 0] [-80 2 0] [-10 5 0] [0 5 0]]
-          [[0 5 0] [25 5 0] [70 2 0] [70 0 0]]])
-        (b-spline {:control-points [[-80 0 0] [-105 1 4] [-80 1 5] [-10 5 5]
-                                    [0 5 5] [25 5 4] [70 2 2] [70 0 0]]
+         [[(c/v [-80 0 0]) (c/v [-80 2 0]) (c/v [-10 5 0]) (c/v [0 5 0])]
+          [(c/v [0 5 0]) (c/v [25 5 0]) (c/v [70 2 0]) (c/v [70 0 0])]])
+        (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
+                                    (c/v [0 5 5]) (c/v [25 5 4]) (c/v [70 2 2]) (c/v [70 0 0])]
                    :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
                    :order 3})
-        (b-spline {:control-points [[-80 0 0] [-105 -1 4] [-80 -1 5] [-10 -5 5]
-                                    [0 -5 5] [25 -5 4] [70 -2 2] [70 0 0]]
+        (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
+                                    (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [70 -2 2]) (c/v [70 0 0])]
                    :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
                    :order 3})
         (composite-bezier-curve
-         [[[-80 0 0] [-80 -2 0] [-10 -5 0] [0 -5 0]]
-          [[0 -5 0] [25 -5 0] [70 -2 0] [70 0 0]]])])
+         [[(c/v [-80 0 0]) (c/v [-80 -2 0]) (c/v [-10 -5 0]) (c/v [0 -5 0])]
+          [(c/v [0 -5 0]) (c/v [25 -5 0]) (c/v [70 -2 0]) (c/v [70 0 0])]])])
       100 400))))
   ;; Fast surf-ski hull take 2
   (os/write
@@ -274,20 +314,42 @@
     (os/extrude-between-polygons
      (protocols/patch-points
       (bezier-patch
-       [(clamped-b-spline {:control-points [[-80 0 0] [-80 1 0] [0 5 0] [5 5 0]
-                                            [20 5 0] [70 1 0] [70 0 0]]
+       [(clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 1 0]) (c/v [0 5 0]) (c/v [5 5 0])
+                                            (c/v [20 5 0]) (c/v [70 1 0]) (c/v [70 0 0])]
                            :knot-vector [1/4 2/4 3/4]
                            :order 3})
-        (clamped-b-spline {:control-points [[-80 0 0] [-105 1 4] [-80 1 5] [-10 5 5]
-                                            [0 5 5] [25 5 4] [65 2 2] [70 1 2] [70 0 0]]
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
+                                            (c/v [0 5 5]) (c/v [25 5 4]) (c/v [65 2 2]) (c/v [70 1 2]) (c/v [70 0 0])]
                            :knot-vector [1/6 2/6 3/6 4/6 5/6]
                            :order 3})
-        (clamped-b-spline {:control-points [[-80 0 0] [-105 -1 4] [-80 -1 5] [-10 -5 5]
-                                            [0 -5 5] [25 -5 4] [65 -2 2] [70 -1 2] [70 0 0]]
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
+                                            (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [65 -2 2]) (c/v [70 -1 2]) (c/v [70 0 0])]
                            :knot-vector [1/6 2/6 3/6 4/6 5/6]
                            :order 3})
-        (clamped-b-spline {:control-points [[-80 0 0] [-80 -1 0] [0 -5 0] [5 -5 0]
-                                            [20 -5 0] [70 -1 0] [70 0 0]]
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 -1 0]) (c/v [0 -5 0]) (c/v [5 -5 0])
+                                            (c/v [20 -5 0]) (c/v [70 -1 0]) (c/v [70 0 0])]
                            :knot-vector [1/4 2/4 3/4]
                            :order 3})])
-      100 400)))))
+      100 400))))
+
+  (stl/write
+   (stl/generate-ascii-solid
+    (protocols/patch-points
+      (bezier-patch
+       [(clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 1 0]) (c/v [0 5 0]) (c/v [5 5 0])
+                                            (c/v [20 5 0]) (c/v [70 1 0]) (c/v [70 0 0])]
+                           :knot-vector [1/4 2/4 3/4]
+                           :order 3})
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
+                                            (c/v [0 5 5]) (c/v [25 5 4]) (c/v [65 2 2]) (c/v [70 1 2]) (c/v [70 0 0])]
+                           :knot-vector [1/6 2/6 3/6 4/6 5/6]
+                           :order 3})
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
+                                            (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [65 -2 2]) (c/v [70 -1 2]) (c/v [70 0 0])]
+                           :knot-vector [1/6 2/6 3/6 4/6 5/6]
+                           :order 3})
+        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 -1 0]) (c/v [0 -5 0]) (c/v [5 -5 0])
+                                            (c/v [20 -5 0]) (c/v [70 -1 0]) (c/v [70 0 0])]
+                           :knot-vector [1/4 2/4 3/4]
+                           :order 3})])
+      100 400))))

@@ -1,63 +1,83 @@
 (ns chisel.coordinates
   "Coordinate/Vector operations"
-  (:require [chisel.protocols :as protocols]))
+  (:require [chisel.protocols :as protocols]
+            [uncomplicate.neanderthal.core :as matrix]
+            [uncomplicate.neanderthal.native :as native]
+            [uncomplicate.neanderthal.vect-math :as vect-math]))
 
-(extend-protocol protocols/PHomogenousCoordinate
-  clojure.lang.PersistentVector
-  (coordinates [this] this)
-  (weight [this] 1)
-  (project [this] this))
-
-(defrecord HomogenousCoordinate [coordinates weight]
-  protocols/PHomogenousCoordinate
-  (coordinates [_] coordinates)
-  (weight [_] weight)
-  (project [_]
-    (mapv #(/ % weight) coordinates)))
-
-;; Homogenous coordinate operations
-(defn add-coordinates
-  "Add homogenous coordinates"
-  ([c1 c2]
-   (HomogenousCoordinate.
-    (mapv + (protocols/coordinates c1) (protocols/coordinates c2))
-    (+ (protocols/weight c1) (protocols/weight c2))))
-  ([c1 c2 & coordinates]
-   (HomogenousCoordinate.
-    (reduce (partial mapv +) (map protocols/coordinates (conj coordinates c1 c2)))
-    (reduce + (map protocols/weight (conj coordinates c1 c2))))))
-
-(defn scalar-multiply-coordinates
-  "Scalar multiply homogenous coordinates"
-  [coordinate scalar]
-  (HomogenousCoordinate.
-   (mapv (partial * scalar) (protocols/coordinates coordinate))
-   (* (protocols/weight coordinate) scalar)))
-
-(defn project-coordinate
-  "Project homogenous coordinate to euclidian plane"
-  [coordinate]
-  (protocols/project coordinate))
-
-(defn euclidian->homogenous
-  "Converts euclidian coordinate to equivalent homogenous coordinate"
-  [coordinate weight]
-  (scalar-multiply-coordinates coordinate weight))
-
-;; Vector (plain euclidian coordinates) operations
-(defn add-vectors
-  "Vector addition"
+(defn sum
   ([v1 v2]
-   (mapv + v1 v2))
+   (matrix/axpy v1 v2))
   ([v1 v2 & vectors]
-   (apply mapv + v1 v2 vectors)))
+   (apply matrix/axpy v1 v2 vectors)))
 
-(defn diff-vectors
-  "Vector difference"
-  [v1 v2]
-  (mapv - v1 v2))
+(defn difference
+  ([v1 v2]
+   (matrix/axpy v1 (matrix/ax -1 v2)))
+  ([v1 v2 & vectors]
+   (apply matrix/axpy (matrix/ax -1 v2) (map (partial matrix/ax -1) vectors))))
 
-(defn opposite-vector
-  "Creates vector of opposite direction to the original one"
+(defn multiply [c v]
+  (matrix/ax c v))
+
+(defn translate-matrix [[x y z]]
+  (native/dge 4 4 [1 0 0 0
+                   0 1 0 0
+                   0 0 1 0
+                   x y z 1]))
+
+(defn scale-matrix [scalar]
+  (native/dge 4 4 [scalar 0 0 0
+                   0 scalar 0 0
+                   0 0 scalar 0
+                   0 0 0 1]))
+
+(defn linear-combination
+  [t c1 c2]
+  (matrix/axpy (matrix/ax (- 1 t) c1) (matrix/ax t c2)))
+
+(defn vector-length
   [v]
-  (mapv unchecked-negate v))
+  (matrix/nrm2 (native/dv (v 0) (v 1) (v 2))))
+
+(defn scale-vector
+  [v desired-length]
+  (let [v-length (matrix/nrm2 v)
+        ratio    (if (zero? v-length) 0 (/ desired-length v-length))]
+    (matrix/mv (scale-matrix ratio) v)))
+
+(defn project [coordinate]
+  (matrix/ax (/ 1 (coordinate 3)) coordinate))
+
+(defn v [c]
+  (apply native/dv (concat c (drop (count c) [0 0 0 1]))))
+
+(defn weighted [coordinate weight]
+  (matrix/ax weight coordinate))
+
+(defn opposite-vector [v]
+  (matrix/mv (native/dge 4 4 [-1 0 0 0
+                              0 -1 0 0
+                              0 0 -1 0
+                              0 0 0 1])
+             v))
+
+(defn orthogonal-vector [v & {:keys [counterclockwise?]}]
+  (matrix/mv (if counterclockwise?
+               (native/dge 4 4 [0 1 0 0
+                                -1 0 0 0
+                                0 0 1 0
+                                0 0 0 1])
+               (native/dge 4 4 [0 -1 0 0
+                                1 0 0 0
+                                0 0 1 0
+                                0 0 0 1]))
+             v))
+
+(defn valid-point? [v]
+  (= 4 (matrix/dim v)))
+
+(extend-protocol protocols/PTransformable
+  uncomplicate.neanderthal.internal.host.buffer_block.RealBlockVector
+  (linear-transform [this matrix]
+    (matrix/mv matrix this)))

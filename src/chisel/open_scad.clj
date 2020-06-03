@@ -7,8 +7,8 @@
 (defn generate-polygon
   "Generates OpenSCAD polygon code"
   [points]
-  (letfn [(format-coordinates [[x y]]
-            (format "[%.3f,%.3f]" (double x) (double y)))]
+  (letfn [(format-coordinates [v]
+            (format "[%f,%f]" (v 0) (v 1)))]
     (format "polygon(points=[%s]);"
             (string/join "," (map format-coordinates points)))))
 
@@ -16,8 +16,8 @@
 (defn generate-polyhedron
   "Generates OpenSCAD polyhedron code"
   [{:keys [points faces]}]
-  (letfn [(format-coordinates [[x y z]]
-            (format "[%.3f,%.3f,%.3f]" (double x) (double y) (double z)))
+  (letfn [(format-coordinates [v]
+            (format "[%f,%f,%f]" (v 0) (v 1) (v 2)))
           (format-indexes [indexes]
             (format "[%s]" (string/join "," indexes)))]
     (format "polyhedron(points=[%s],faces=[%s]);"
@@ -27,13 +27,15 @@
 (defn- extrude-faces
   "Computes faces from sequence of points, where points are presumed
   to describe N polygons with same number of points"
-  [n points]
+  [n points open?]
   {:pre [(zero? (mod (count points) n))]}
   (let [full-count (count points)
         points-in-polygon (/ full-count n)]
     (into
-     [(into [] (range points-in-polygon))
-      (into [] (reverse (range (* points-in-polygon (dec n)) full-count)))]
+     (if open?
+       []
+       [(into [] (range points-in-polygon))
+        (into [] (reverse (range (* points-in-polygon (dec n)) full-count)))])
      (mapcat
       (fn [level]
         (let [offset (* level points-in-polygon)]
@@ -50,11 +52,11 @@
 
 (defn extrude-between-polygons
   "Generate polyhedron from N polygons with same number of points"
-  [polygon-points-coll]
+  [polygon-points-coll & {:keys [open?]}]
   {:pre [(apply = (map count polygon-points-coll))]}
   (let [points (apply concat polygon-points-coll)]
     {:points points
-     :faces  (extrude-faces (count polygon-points-coll) points)}))
+     :faces  (extrude-faces (count polygon-points-coll) points open?)}))
 
 ;; Open Scad operations
 (defn difference
@@ -78,8 +80,8 @@
   (str (format "linear_extrude(height=%s) {" height) (string/join " " items) "}"))
 
 ;; Utility fn to write to file
-(defn write-to-file [path content]
+(defn write-to-file [path & content]
   (with-open [w (io/writer path)]
-    (.write w content)))
+    (.write w (string/join "\n" content))))
 
 (def write (partial write-to-file "/Users/janherich/CAD/chisel.scad"))
