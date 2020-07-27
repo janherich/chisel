@@ -45,7 +45,7 @@
           half-base       (/ (c/vector-length a->b) 2)
           base-c-distance (+ (/ half-base (Math/tan alpha))
                              (/ half-base (Math/sin alpha)))
-          c               (c/linear-transform
+          c               (protocols/linear-transform
                            (c/linear-combination 1/2 a b)
                            (c/translate-matrix
                             (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)
@@ -58,7 +58,7 @@
           heigth       (/ a-b-distance (Math/tan alpha) 2)]
       [[a
         (c/weighted
-         (c/linear-transform
+         (protocols/linear-transform
           (c/linear-combination 1/2 a b)
           (c/translate-matrix
            (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)

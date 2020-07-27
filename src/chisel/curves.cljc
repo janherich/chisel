@@ -1,12 +1,14 @@
 (ns chisel.curves
   "Various curve/patch implementations"
-  (:require [chisel.protocols :as protocols]
-            [chisel.coordinates :as c]))
+  (:require [clojure.set :as s]
+            [chisel.protocols :as protocols]
+            [chisel.coordinates :as c]
+            [chisel.utils :as u]))
 
 (defrecord ConstantCurve [point]
   protocols/PParametricCurve
-  (point [_ _] point)
-  (points [_ points-count] (repeat points-count point))
+  (curve-point [_ _] point)
+  (polyline [_ points-count] (repeat points-count point))
   (closed? [_] true)
   protocols/PTransformable
   (linear-transform [_ matrix]
@@ -30,29 +32,28 @@
     (c/linear-combination t point-1 point-2)
     (de-casteljau t (map (partial de-casteljau t) (partition 2 1 control-points)))))
 
-(defn resolve-curve
-  "Resolves parametric curve function by mapping [0-1] interval to the function, divided
-  equally into `points-count` fractions. Interval can be optionally left open at start by
-  passing `:drop-first?` kw arg or left open at end by passing `:drop-last?` kw arg, it's
-  closed on both ends by default."
-  [points-count curve-fn & {:keys [drop-first? drop-last?]
-                            :or   {drop-first? false drop-last? false}}]
+(defn- resolve-curve-xf
+  "Transducer resolving parametric curve function by mapping [0-1] interval to the function,
+  divided equally into `points-count` fractions."
+  [points-count curve-fn]
   (assert (> points-count 1) "curve needs at least 2 points")
-  (assert (not (and drop-first? drop-last?)) "Either drop-first? or drop-last? is supported, not both")
-  (let [denominator (if (or drop-first? drop-last?) points-count (dec points-count))]
-    (map (comp curve-fn #(/ % denominator))
-         (range (if drop-first? 1 0)
-                (if drop-first? (inc points-count) points-count)))))
+  (let [denominator (dec points-count)]
+    (map #(curve-fn (/ % denominator)))))
+
+(defn- resolve-curve
+  [points-count curve-fn]
+  (into [] (resolve-curve-xf points-count curve-fn) (range points-count)))
 
 (defn- parameter-assertion [t]
-  (assert (>= 1 t 0) "parameter `t` has to be in (inclusive) range [0 1]"))
+  (assert (>= 1 t 0)
+          (format "parameter `t` has to be in (inclusive) range [0 1], :t = %s" t)))
 
 (defrecord BezierCurve [control-points]
   protocols/PParametricCurve
-  (point [_ t]
+  (curve-point [_ t]
     (parameter-assertion t)
     (c/project (de-casteljau t control-points)))
-  (points [_ points-count]
+  (polyline [_ points-count]
     (resolve-curve points-count #(c/project (de-casteljau % control-points))))
   (closed? [_]
     (= (first control-points) (last control-points)))
@@ -82,10 +83,10 @@
 
 (defrecord CompositeBezierCurve [control-points-sequence]
   protocols/PParametricCurve
-  (point [_ t]
+  (curve-point [_ t]
     (parameter-assertion t)
     (resolve-composite-curve-point t control-points-sequence))
-  (points [_ points-count]
+  (polyline [_ points-count]
     (resolve-curve points-count #(resolve-composite-curve-point % control-points-sequence)))
   (closed? [_]
     (= (ffirst control-points-sequence)
@@ -113,7 +114,7 @@
 (defn- parameter->effective-curve
   "Given parameter value t, returns sequence of `span-cp-tuples` necessary for computation of t"
   [t span-cp-tuples]
-  (let [compare (if (or (= t 0) (= t 1)) >= >)]
+  (let [compare (if (or (zero? t) (or (= t 1) (= t 1.0))) >= >)]
     (filter (fn [[[from to] _]]
               (compare to t from))
             span-cp-tuples)))
@@ -139,10 +140,10 @@
 
 (defrecord BSplineCurve [span-cp-tuples effective-span]
   protocols/PParametricCurve
-  (point [_ t]
+  (curve-point [_ t]
     (parameter-assertion t)
     (resolve-bspline-point t span-cp-tuples effective-span))
-  (points [_ points-count]
+  (polyline [_ points-count]
     (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples effective-span)))
   (closed? [_]
     (and (= [0 1] effective-span)
@@ -193,76 +194,129 @@
   [opts]
   (b-spline (clamp-knot-vector opts)))
 
+(defn- resolve-patch-points
+  "Resolves patch points based on i-j resolution + slice function"
+  [i-count j-count slice-fn]
+  (transduce (resolve-curve-xf
+              i-count
+              (fn [i]
+                (let [curve (slice-fn i)]
+                  (resolve-curve j-count (partial protocols/curve-point curve)))))
+             into
+             (range i-count)))
+
+(defn- bindable-perimeter-curves [curves]
+  (let [curves-set (into #{} curves)]
+    (when (> (count curves-set) 1)
+      (remove #(instance? ConstantCurve %) curves-set))))
+
+(defn- perimeter-curves [i-curves j-curves]
+  (let [i-bindable (bindable-perimeter-curves i-curves)
+        j-bindable (bindable-perimeter-curves j-curves)]
+    (cond-> {}
+      i-bindable (assoc i-bindable :i)
+      j-bindable (assoc j-bindable :j))))
+
 (defrecord TensorProductPatch [slice-fn control-curves]
   protocols/PParametricPatch
-  (slice-points [_ t slice-points-count]
-    (protocols/points
-     (slice-fn (map #(protocols/point % t)
-                    control-curves))
-     slice-points-count))
-  (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
+  (patch-point [_ i j]
+    (protocols/curve-point (slice-fn control-curves i) j))
+  protocols/PPatch
+  (triangle-mesh [_ [i-count j-count]]
+    {:points (resolve-patch-points i-count j-count (partial slice-fn control-curves))
+     :faces  (u/triangulate-rectangular-mesh i-count j-count)})
+  (perimeter-curves [_]
+    (perimeter-curves [(first control-curves) (last control-curves)]
+                      [(slice-fn control-curves 0) (slice-fn control-curves 1)]))
   protocols/PTransformable
   (linear-transform [this matrix]
     (update this :control-curves #(map (fn [cc] (protocols/linear-transform cc matrix)) %))))
 
 (defn tensor-product-patch
   "Creates new tensor product patch"
-  [slice-fn control-curves]
-  (map->TensorProductPatch {:slice-fn       slice-fn
-                            :control-curves control-curves}))
+  [slice-curve-fn control-curves]
+  (map->TensorProductPatch
+   {:slice-fn       (fn [curves i]
+                      (slice-curve-fn (map #(protocols/curve-point % i) curves)))
+    :control-curves control-curves}))
 
 (defn bezier-patch
   "Creates new bezier patch"
   [control-curves]
   (tensor-product-patch bezier-curve control-curves))
 
-(defrecord CompositeBezierPatch [control-curve-sequences]
-  protocols/PParametricPatch
-  (slice-points [_ t slice-points-count]
-    (protocols/points
-     (composite-bezier-curve (map (fn [control-curves]
-                                    (map #(protocols/point % t)
-                                         control-curves))
-                                  control-curve-sequences))
-     slice-points-count))
-  (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
-  protocols/PTransformable
-  (linear-transform [this matrix]
-    (update this :control-curve-sequences
-            #(map (fn [control-curves]
-                    (map (fn [cc] (protocols/linear-transform cc matrix))
-                         control-curves)) %))))
-
-(defn composite-bezier-patch
-  "Creates new composite bezier patch"
-  [control-curve-sequences]
-  (->CompositeBezierPatch control-curve-sequences))
-
-(defrecord BSplinePatch [control-curves knot-vector order]
-  protocols/PParametricPatch
-  (slice-points [_ t slice-points-count]
-    (protocols/points
-     (b-spline {:control-points (map #(protocols/point % t) control-curves)
-                :knot-vector    knot-vector
-                :order          order})
-     slice-points-count))
-  (patch-points [this slice-points-count slices-count]
-    (resolve-curve slices-count #(protocols/slice-points this % slice-points-count)))
-  protocols/PTransformable
-  (linear-transform [this matrix]
-    (update this :control-curves #(map (fn [cc] (protocols/linear-transform cc matrix)) %))))
-
 (defn b-spline-patch
-  "Creates new b-spline patch"
-  [opts]
-  (map->BSplinePatch opts))
+  "Creates new b-splie-patch"
+  [{:keys [control-curves] :as opts}]
+  (tensor-product-patch (fn [points]
+                          (b-spline (assoc opts :control-points points)))
+                        control-curves))
 
 (defn clamped-b-spline-patch
-  "Creates new clamped b-spline-patch"
-  [opts]
-  (b-spline-patch (clamp-knot-vector opts)))
+  "Creates new b-splie-patch"
+  [{:keys [control-curves] :as opts}]
+  (let [clamped-opts (clamp-knot-vector opts)]
+    (tensor-product-patch (fn [points]
+                            (b-spline (assoc clamped-opts :control-points points)))
+                          control-curves)))
+
+(defn- join-paths [{paths :perimeter-curve->fabric-path :as acc} {:keys [direction edges patch]}]
+  (let [[join-edge path-to] edges
+        join-start          (get paths join-edge)
+        join-end            (get paths path-to)
+        start               (if join-start (:path-to join-start) join-edge)
+        end                 (if join-end (:path-to join-end) path-to)
+        new-direction       (or (:direction join-start) (:direction join-end) direction)
+        closed-path?        (or (= start end)
+                                (= path-to start)
+                                (= join-edge end))] (-> acc
+        (assoc :perimeter-curve->fabric-path (cond-> (dissoc paths join-edge path-to)
+                                               (and end (not closed-path?))
+                                               (assoc end (cond-> {:direction new-direction}
+                                                            start (assoc :path-to start)))
+                                               (and start (not closed-path?))
+                                               (assoc start (cond-> {:direction new-direction}
+                                                              end (assoc :path-to end)))))
+        (assoc-in [:patches patch direction] new-direction))))
+
+(defn- stitch-patch [stitched-patch patch]
+  (let [perimeter-curves (protocols/perimeter-curves patch)]
+    (reduce-kv (fn [acc edges direction]
+                 (join-paths acc {:direction direction
+                                  :edges     edges
+                                  :patch     patch}))
+               stitched-patch
+               perimeter-curves)))
+
+(defrecord StitchedPatch [perimeter-curve->fabric-path patches]
+  protocols/PPatch
+  (triangle-mesh [_ [i-count j-count]]
+    (let [direction-base {:i i-count
+                          :j j-count}]
+      (reduce u/merge-triangle-meshes
+              {:points []
+               :faces  []}
+              (pmap (fn [[patch direction-map]]
+                      (protocols/triangle-mesh patch
+                                               [(get direction-base (get direction-map :i :i))
+                                                (get direction-base (get direction-map :j :j))]))
+                    patches))))
+  (perimeter-curves [_]
+    (reduce-kv (fn [acc from {:keys [direction path-to]}]
+                 (assoc acc (cond-> [from] path-to (conj path-to)) direction))
+               {}
+               perimeter-curve->fabric-path))
+  protocols/PStichable
+  (stitch [this new-patch]
+    (stitch-patch this new-patch)))
+
+(defn stitched-patch
+  "Creates new stitched patch"
+  [& patches]
+  (reduce protocols/stitch
+          (map->StitchedPatch {:perimeter-curve->fabric-path {}
+                               :patches                      {}})
+          patches))
 
 (comment
   (require '[chisel.open-scad :as os])
@@ -270,7 +324,7 @@
   ;; Fast surf-ski hull planform
   (os/write
    (os/generate-polygon
-    (protocols/points
+    (protocols/polyline
      (composite-bezier-curve [[(c/v [-80 0]) (c/v [-80 2]) (c/v [-10 5]) (c/v [0 5])]
                               [(c/v [0 5]) (c/v [25 5]) (c/v [70 2]) (c/v [70 0])]
                               [(c/v [70 0]) (c/v [70 -2]) (c/v [25 -5]) (c/v [0 -5])]
@@ -279,62 +333,59 @@
   ;; Inverted bow yacht hull
   (os/write
    (os/generate-polyhedron
-    (os/extrude-between-polygons
-     (protocols/patch-points
-      (bezier-patch
-       [(bezier-curve [(c/v [5 0 0]) (c/v [-5 0 50]) (c/v [1 0 100])])
-        (bezier-curve [(c/v [5 10 -5]) (c/v [-5 12 50]) (c/v [1 5 95])])
-        (bezier-curve [(c/v [5 10 -5]) (c/v [15 12 50]) (c/v [9 5 95])])
-        (bezier-curve [(c/v [5 0 0]) (c/v [15 0 50]) (c/v [9 0 100])])])
-      100 100))))
+    (protocols/triangle-mesh
+     (bezier-patch
+      [(bezier-curve [(c/v [5 0 0]) (c/v [-5 0 50]) (c/v [1 0 100])])
+       (bezier-curve [(c/v [5 10 -5]) (c/v [-5 12 50]) (c/v [1 5 95])])
+       (bezier-curve [(c/v [5 10 -5]) (c/v [15 12 50]) (c/v [9 5 95])])
+       (bezier-curve [(c/v [5 0 0]) (c/v [15 0 50]) (c/v [9 0 100])])])
+     [100 100])))
   ;; Fast surf-ski hull
   (os/write
    (os/generate-polyhedron
-    (os/extrude-between-polygons
-     (protocols/patch-points
-      (bezier-patch
-       [(composite-bezier-curve
-         [[(c/v [-80 0 0]) (c/v [-80 2 0]) (c/v [-10 5 0]) (c/v [0 5 0])]
-          [(c/v [0 5 0]) (c/v [25 5 0]) (c/v [70 2 0]) (c/v [70 0 0])]])
-        (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
-                                    (c/v [0 5 5]) (c/v [25 5 4]) (c/v [70 2 2]) (c/v [70 0 0])]
-                   :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
-                   :order 3})
-        (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
-                                    (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [70 -2 2]) (c/v [70 0 0])]
-                   :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
-                   :order 3})
-        (composite-bezier-curve
-         [[(c/v [-80 0 0]) (c/v [-80 -2 0]) (c/v [-10 -5 0]) (c/v [0 -5 0])]
-          [(c/v [0 -5 0]) (c/v [25 -5 0]) (c/v [70 -2 0]) (c/v [70 0 0])]])])
-      100 400))))
+    (protocols/triangle-mesh
+     (bezier-patch
+      [(composite-bezier-curve
+        [[(c/v [-80 0 0]) (c/v [-80 2 0]) (c/v [-10 5 0]) (c/v [0 5 0])]
+         [(c/v [0 5 0]) (c/v [25 5 0]) (c/v [70 2 0]) (c/v [70 0 0])]])
+       (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
+                                   (c/v [0 5 5]) (c/v [25 5 4]) (c/v [70 2 2]) (c/v [70 0 0])]
+                  :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
+                  :order 3})
+       (b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
+                                   (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [70 -2 2]) (c/v [70 0 0])]
+                  :knot-vector [0 0 0 0 1/5 2/5 3/5 4/5 1 1 1 1]
+                  :order 3})
+       (composite-bezier-curve
+        [[(c/v [-80 0 0]) (c/v [-80 -2 0]) (c/v [-10 -5 0]) (c/v [0 -5 0])]
+         [(c/v [0 -5 0]) (c/v [25 -5 0]) (c/v [70 -2 0]) (c/v [70 0 0])]])])
+     [400 100])))
   ;; Fast surf-ski hull take 2
   (os/write
    (os/generate-polyhedron
-    (os/extrude-between-polygons
-     (protocols/patch-points
-      (bezier-patch
-       [(clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 1 0]) (c/v [0 5 0]) (c/v [5 5 0])
-                                            (c/v [20 5 0]) (c/v [70 1 0]) (c/v [70 0 0])]
-                           :knot-vector [1/4 2/4 3/4]
-                           :order 3})
-        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
-                                            (c/v [0 5 5]) (c/v [25 5 4]) (c/v [65 2 2]) (c/v [70 1 2]) (c/v [70 0 0])]
-                           :knot-vector [1/6 2/6 3/6 4/6 5/6]
-                           :order 3})
-        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
-                                            (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [65 -2 2]) (c/v [70 -1 2]) (c/v [70 0 0])]
-                           :knot-vector [1/6 2/6 3/6 4/6 5/6]
-                           :order 3})
-        (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 -1 0]) (c/v [0 -5 0]) (c/v [5 -5 0])
-                                            (c/v [20 -5 0]) (c/v [70 -1 0]) (c/v [70 0 0])]
-                           :knot-vector [1/4 2/4 3/4]
-                           :order 3})])
-      100 400))))
-
+    (protocols/triangle-mesh
+     (bezier-patch
+      [(clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 1 0]) (c/v [0 5 0]) (c/v [5 5 0])
+                                           (c/v [20 5 0]) (c/v [70 1 0]) (c/v [70 0 0])]
+                          :knot-vector [1/4 2/4 3/4]
+                          :order 3})
+       (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 1 4]) (c/v [-80 1 5]) (c/v [-10 5 5])
+                                           (c/v [0 5 5]) (c/v [25 5 4]) (c/v [65 2 2]) (c/v [70 1 2]) (c/v [70 0 0])]
+                          :knot-vector [1/6 2/6 3/6 4/6 5/6]
+                          :order 3})
+       (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-105 -1 4]) (c/v [-80 -1 5]) (c/v [-10 -5 5])
+                                           (c/v [0 -5 5]) (c/v [25 -5 4]) (c/v [65 -2 2]) (c/v [70 -1 2]) (c/v [70 0 0])]
+                          :knot-vector [1/6 2/6 3/6 4/6 5/6]
+                          :order 3})
+       (clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 -1 0]) (c/v [0 -5 0]) (c/v [5 -5 0])
+                                           (c/v [20 -5 0]) (c/v [70 -1 0]) (c/v [70 0 0])]
+                          :knot-vector [1/4 2/4 3/4]
+                          :order 3})])
+     [400 100])))
+  ;; Fast surf-ski hull take 2 direct stl generation
   (stl/write
    (stl/generate-ascii-solid
-    (protocols/patch-points
+    (protocols/triangle-mesh
       (bezier-patch
        [(clamped-b-spline {:control-points [(c/v [-80 0 0]) (c/v [-80 1 0]) (c/v [0 5 0]) (c/v [5 5 0])
                                             (c/v [20 5 0]) (c/v [70 1 0]) (c/v [70 0 0])]
@@ -352,4 +403,4 @@
                                             (c/v [20 -5 0]) (c/v [70 -1 0]) (c/v [70 0 0])]
                            :knot-vector [1/4 2/4 3/4]
                            :order 3})])
-      100 400))))
+      [400 100]))))

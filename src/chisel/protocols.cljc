@@ -7,16 +7,31 @@
 
 (defprotocol PParametricCurve
   "Protocol for parametric curves"
-  (point [this t]
+  (curve-point [this t]
     "given parameter value `t`, returns point on the curve")
-  (points [this points-count]
-    "given `points-count`, returns ordered sequence of points on the curve with given number of elements")
+  (polyline [this points-count]
+    "given `points-count`, returns polyline as ordered sequence of points approximating the curve with given number of elements")
   (closed? [this]
     "Returns `true` if curve is closed, `false` otherwise"))
 
+(defprotocol PMappedCurve
+  "Protocols for curves mapped to non-standard realms"
+  (mapped-to [this]))
+
+(defprotocol PPatch
+  "Protocol for patches"
+  (triangle-mesh [this resolution]
+    "given `resolution` vector, returns triangle-mesh approximating patch, with `:points` key containing vector of points and
+    `:faces` key containing set of triangle faces, represented by point indexes")
+  (perimeter-curves [this]
+    "Map of curves creating perimeter of the patch for `:i` and `:j` dimensions"))
+
 (defprotocol PParametricPatch
   "Protocol for parametric patches"
-  (slice-points [this t slice-points-count]
-    "Give parameter value `t`, returns patch slice with `slice-points-count` points when cut at `t`")
-  (patch-points [this slice-points-count slices-count]
-    "given `slices-count`, returns ordered sequence of slices (each with `slice-points-count` points) through the patch"))
+  (patch-point [this i j]
+    "given paramteres values `i` and `j`, returns point on patch"))
+
+(defprotocol PStichable
+  "Protocol for stichable things"
+  (stitch [this new-patch]
+    "Returns new stitched-patch enriched by `new-patch` piece"))

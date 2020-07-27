@@ -20,21 +20,6 @@
                           (- (* x1 y2) (* y1 x2))])
                     1)))
 
-(defn- tesselate-patch
-  "Tesselates patch represented by sequence of patch slices"
-  [patch-slices & {:keys [triangulate-fn] :or {triangulate-fn identity}}]
-  (mapcat (fn [[lower-slice upper-slice]]
-            (assert (= (count lower-slice)
-                       (count upper-slice))
-                    "Slices in patch for tesselation must have the same amount of points")
-            (mapcat (fn [[lower-point-1 lower-point-2]
-                         [upper-point-1 upper-point-2]]
-                      [(triangulate-fn [lower-point-1 upper-point-1 lower-point-2])
-                       (triangulate-fn [upper-point-2 lower-point-2 upper-point-1])])
-                    (partition 2 1 lower-slice)
-                    (partition 2 1 upper-slice)))
-          (partition 2 1 patch-slices)))
-
 (defn- format-coordinates [v]
   (format "%f %f %f" (v 0) (v 1) (v 2)))
 
@@ -54,9 +39,13 @@
 
 (defn generate-ascii-solid
   "Generates ASCII STL solid string"
-  [slices]
+  [{:keys [points faces]}]
   (format "solid Chisel_Model\n  %sendsolid Chisel_Model"
-          (apply str (tesselate-patch slices :triangulate-fn generate-facet-str))))
+          (apply str (map (fn [[a b c]]
+                            (generate-facet-str [(get points a)
+                                                 (get points b)
+                                                 (get points c)]))
+                          faces))))
 
 ;; Utility fn to write to file
 (defn write-to-file [path & content]

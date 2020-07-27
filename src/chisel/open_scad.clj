@@ -24,40 +24,6 @@
             (string/join "," (map format-coordinates points))
             (string/join "," (map format-indexes faces)))))
 
-(defn- extrude-faces
-  "Computes faces from sequence of points, where points are presumed
-  to describe N polygons with same number of points"
-  [n points open?]
-  {:pre [(zero? (mod (count points) n))]}
-  (let [full-count (count points)
-        points-in-polygon (/ full-count n)]
-    (into
-     (if open?
-       []
-       [(into [] (range points-in-polygon))
-        (into [] (reverse (range (* points-in-polygon (dec n)) full-count)))])
-     (mapcat
-      (fn [level]
-        (let [offset (* level points-in-polygon)]
-          (mapcat (fn [idx]
-                    (let [next-idx (mod (inc idx) points-in-polygon)]
-                      [[(+ offset next-idx)
-                        (+ offset idx)
-                        (+ offset next-idx points-in-polygon)]
-                       [(+ offset next-idx points-in-polygon)
-                        (+ offset idx)
-                        (+ offset idx points-in-polygon)]]))
-                  (range points-in-polygon))))
-      (range (dec n))))))
-
-(defn extrude-between-polygons
-  "Generate polyhedron from N polygons with same number of points"
-  [polygon-points-coll & {:keys [open?]}]
-  {:pre [(apply = (map count polygon-points-coll))]}
-  (let [points (apply concat polygon-points-coll)]
-    {:points points
-     :faces  (extrude-faces (count polygon-points-coll) points open?)}))
-
 ;; Open Scad operations
 (defn difference
   "Generates OpenSCAD `difference` call"
