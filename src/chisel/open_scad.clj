@@ -8,7 +8,7 @@
   "Generates OpenSCAD polygon code"
   [points]
   (letfn [(format-coordinates [v]
-            (format "[%f,%f]" (v 0) (v 1)))]
+            (format "[%f,%f]" (double (v 0)) (double (v 1))))]
     (format "polygon(points=[%s]);"
             (string/join "," (map format-coordinates points)))))
 
@@ -17,7 +17,7 @@
   "Generates OpenSCAD polyhedron code"
   [{:keys [points faces]}]
   (letfn [(format-coordinates [v]
-            (format "[%f,%f,%f]" (v 0) (v 1) (v 2)))
+            (format "[%f,%f,%f]" (double (v 0)) (double (v 1)) (double (v 2))))
           (format-indexes [indexes]
             (format "[%s]" (string/join "," indexes)))]
     (format "polyhedron(points=[%s],faces=[%s]);"

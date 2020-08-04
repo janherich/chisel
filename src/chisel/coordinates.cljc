@@ -20,17 +20,38 @@
 (defn multiply [c v]
   (matrix/ax c v))
 
-(defn translate-matrix [[x y z]]
-  (native/dge 4 4 [1 0 0 0
-                   0 1 0 0
-                   0 0 1 0
-                   x y z 1]))
+(def ^:private axis->idx {:x 0 :y 5 :z 10})
 
-(defn scale-matrix [scalar]
-  (native/dge 4 4 [scalar 0 0 0
-                   0 scalar 0 0
-                   0 0 scalar 0
-                   0 0 0 1]))
+(def ^:private identity-matrix
+  [1 0 0 0
+   0 1 0 0
+   0 0 1 0
+   0 0 0 1])
+
+(defn translate-matrix [v]
+  (let [x (v 0)
+        y (v 1)
+        z (v 2)]
+    (native/dge 4 4 [1 0 0 0
+                     0 1 0 0
+                     0 0 1 0
+                     x y z 1])))
+
+(defn scale-matrix [scale-opts]
+  (let [axis->scale (if (map? scale-opts)
+                      scale-opts
+                      {:x scale-opts
+                       :y scale-opts
+                       :z scale-opts})]
+    (native/dge
+     4 4 (reduce-kv (fn [acc axis scale]
+                      (assoc acc (axis->idx axis) scale))
+                    identity-matrix
+                    axis->scale))))
+
+(defn flip-matrix [axis]
+  (assert (#{:x :y :z} axis) "Flip axis must be either `:x`, `:y` or `:z`")
+  (scale-matrix {axis -1}))
 
 (defn linear-combination
   [t c1 c2]

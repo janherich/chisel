@@ -14,10 +14,6 @@
   (closed? [this]
     "Returns `true` if curve is closed, `false` otherwise"))
 
-(defprotocol PMappedCurve
-  "Protocols for curves mapped to non-standard realms"
-  (mapped-to [this]))
-
 (defprotocol PPatch
   "Protocol for patches"
   (triangle-mesh [this resolution]

@@ -5,23 +5,21 @@
             [chisel.coordinates :as c]
             [chisel.conic-sections :as conics]
             [chisel.projections :as p]))
-(comment
-  (defn airfoil
-    "Simple airfoil as composite bezier curve"
-    [{:keys [front rear thickness max-thickness rear-slope]
-      :or {max-thickness 1/3 rear-slope 2/3}}]
-    (let [front->rear     (c/difference rear front)
-          thickness-value (/ (* thickness (c/vector-length front->rear)) 2)
-          chord->top      (c/scale-vector (c/orthogonal-vector front->rear) thickness-value)
-          front-up        (protocols/translate front chord->top)
-          middle-up       (protocols/translate (c/linear-combination (- 1 max-thickness) front
-                                                                     max-thickness rear)
-                                               chord->top)
-          rear-up         (protocols/translate (c/linear-combination (- 1 rear-slope) front
-                                                                     rear-slope rear)
-                                               chord->top)]
-      (curves/composite-bezier-curve [[front front-up middle-up]
-                                      [middle-up rear-up rear]]))))
+
+(defn airfoil
+  "Simple airfoil as composite bezier curve"
+  [{:keys [front rear thickness max-thickness rear-slope]
+    :or {max-thickness 1/3 rear-slope 2/3}}]
+  (let [front->rear     (c/difference rear front)
+        thickness-value (/ (* thickness (c/vector-length front->rear)) 2)
+        chord->top      (c/scale-vector (c/orthogonal-vector front->rear) thickness-value)
+        front-up        (protocols/linear-transform front (c/translate-matrix chord->top))
+        middle-up       (protocols/linear-transform (c/linear-combination max-thickness front rear)
+                                                    (c/translate-matrix chord->top))
+        rear-up         (protocols/linear-transform (c/linear-combination rear-slope front rear)
+                                                    (c/translate-matrix chord->top))]
+    (curves/composite-bezier-curve [[front front-up middle-up]
+                                    [middle-up rear-up rear]])))
 (comment
   (defn wrap-flanges [airfoil-curve thickness front rear]
     (let [front->rear (c/difference rear front)

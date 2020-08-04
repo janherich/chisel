@@ -61,17 +61,36 @@
         (protocols/stitch (curves/bezier-patch [(left-curve lower-left) (right-curve lower-left)]))
         (protocols/stitch (curves/bezier-patch [(left-curve upper-left) (right-curve upper-left)])))))
 
+(defn- add-full-edges [patch rectangles step offset full-edge]
+  (reduce (fn [acc origin]
+            (let [left  (rectangular-coordinates origin offset full-edge)
+                  right (rectangular-coordinates (update origin 0 + (- step offset)) offset full-edge)]
+              (-> acc
+                  (protocols/stitch (curves/bezier-patch [(right-curve left) (left-curve right)]))
+                  (protocols/stitch (curves/bezier-patch [(left-curve left) (right-curve left)]))
+                  (protocols/stitch (curves/bezier-patch [(left-curve right) (right-curve right)])))))
+          patch
+          (concat (for [x (range 0 rectangles)]
+                    (let [origin-x (* x step)]
+                      [origin-x 1]))
+                  (for [x (range 0 rectangles)]
+                    (let [origin-x (* x step)]
+                      [origin-x full-edge])))))
+
 (defn grid-infill
   ([rectangles thickness-ratio]
    (grid-infill rectangles rectangles thickness-ratio))
-  ([rectangles-a rectangles-b thickness-ratio]
-   (let [step-a           (/ 1 rectangles-a)
+  ([rectangles-a rectangles-b thickness-ratio & {:keys [full-edge] :or {full-edge 0}}]
+   (let [width-interval   (- 1 (* 2 full-edge))
+         step-a           (/ 1 rectangles-a)
          half-thickness-a (* step-a (/ thickness-ratio 2))
-         step-b           (/ 1 rectangles-b)
-         half-thickness-b (* step-b (/ thickness-ratio 2))]
-     (reduce (partial accumulate-grid step-a half-thickness-a step-b half-thickness-b)
-             (curves/stitched-patch)
-             (for [x (range 0 1 step-a) y (range 1 0 (- step-b))] [x y])))))
+         step-b           (/ width-interval rectangles-b)
+         half-thickness-b (* step-b (/ thickness-ratio 2))
+         result           (reduce (partial accumulate-grid step-a half-thickness-a step-b half-thickness-b)
+                                  (curves/stitched-patch)
+                                  (for [x (range 0 1 step-a) y (range (- 1 full-edge) full-edge (- step-b))] [x y]))]
+     (cond-> result
+       (not (zero? full-edge)) (add-full-edges rectangles-a step-a half-thickness-a full-edge)))))
 
 ;; Triangle infill
 
@@ -160,6 +179,90 @@
                 (map-infill-mesh upper-patch infill-mesh))
                perimeter-curves)))
 
+(defn triangle-polylines [triangles x-step y-step thickness]
+  (let [polyline (apply concat
+                        (take triangles
+                              (iterate (fn [[upper lower]]
+                                         [(update upper 0 + (* 2 x-step)) (update lower 0 + (* 2 x-step))])
+                                       [[0 y-step] [x-step 0]])))]
+    [polyline
+     (map #(update % 1 + thickness) polyline)]))
+
+(defn curved-polylines [triangles outer-r inner-r thickness]
+  (let [step        (/ Math/PI triangles 2)
+        outer-inner (iterate not true)
+        angles-seq  (iterate (partial + step) 0)]
+    [(map (fn [angle outer?]
+            (let [r (if outer? outer-r (+ inner-r thickness))]
+              [(* (Math/cos angle) r) (* (Math/sin angle) r)]))
+          (take (inc (* 2 triangles)) angles-seq)
+          outer-inner)
+     (map (fn [angle outer?]
+            (let [r (if outer? (- outer-r thickness) inner-r)]
+              [(* (Math/cos angle) r) (* (Math/sin angle) r)]))
+          (take (inc (* 2 triangles)) angles-seq)
+          outer-inner)]))
+
+(defn extrude-mesh
+  ([polylines height]
+   (extrude-mesh polylines 0 height))
+  ([[polyline-1 polyline-2] start-height end-height]
+   (let [faces           (u/triangulate-rectangular-mesh 2 (count polyline-1))
+         bottom-points-1 (mapv #(conj % start-height) polyline-1)
+         bottom-points-2 (mapv #(conj % start-height) polyline-2)
+         bottom-points   (into bottom-points-1 bottom-points-2)  
+         bottom-mesh     {:points bottom-points
+                          :faces  faces}
+         top-points-1    (mapv #(assoc % 2 end-height) bottom-points-1)
+         top-points-2    (mapv #(assoc % 2 end-height) bottom-points-2)
+         top-points      (into top-points-1 top-points-2)
+         top-mesh        (u/reverse-polyhedron-faces {:points top-points
+                                                      :faces  faces})
+         connect-mesh    {:points (into (conj (into top-points-1 (reverse top-points-2))
+                                              (first top-points-1))
+                                        (conj (into bottom-points-1 (reverse bottom-points-2))
+                                              (first bottom-points-1)))
+                          :faces  (u/triangulate-rectangular-mesh 2 (inc (count bottom-points)))}]
+     (-> bottom-mesh
+         (u/merge-triangle-meshes top-mesh)
+         (u/merge-triangle-meshes connect-mesh)))))
+
+(comment
+  (require '[chisel.conic-sections :as conics])
+  (let [height     100
+        r          100
+        thickness  10
+        inner-r    (- r thickness)
+        nozzle     0.8
+        rib-height 0.4
+        inner-arc (map
+                   (fn [v]
+                     [(v 0) (v 1)])
+                   (protocols/polyline
+                    (conics/elliptic-curve (c/v [0 0]) (c/v [0 inner-r]) (c/v [inner-r 0]) :section :half)
+                    200))
+        outer-arc (map
+                   (fn [v]
+                     [(v 0) (v 1)])
+                   (protocols/polyline
+                    (conics/elliptic-curve (c/v [0 0]) (c/v [0 r]) (c/v [r 0]) :section :half)
+                    200))]
+    (os/write
+     (os/generate-polyhedron
+      (extrude-mesh (curved-polylines 10 r inner-r nozzle) rib-height (- height rib-height)))
+     (os/generate-polyhedron
+      (extrude-mesh [[[(- r) (- nozzle)] [(- inner-r) (- nozzle)]]
+                     [[(- r) 0] [(- inner-r) 0]]]
+                    height))
+     (os/generate-polyhedron
+      (extrude-mesh [[[inner-r (- nozzle)] [r (- nozzle)]]
+                     [[inner-r 0] [r 0]]]
+                    height))
+     (os/generate-polyhedron
+      (extrude-mesh [outer-arc inner-arc] rib-height))
+     (os/generate-polyhedron
+      (extrude-mesh [outer-arc inner-arc] (- height rib-height) height)))))
+
 (comment
   (def p1
     (curves/bezier-patch
@@ -183,7 +286,7 @@
         :knot-vector    [1/3 2/3]
         :order          2})]))
 
-  (def g (triangle-infill 10 6 1/10 :base 1/10))
+  (def g (triangle-infill 10 6 1/20 :base 1/10))
 
   (def infill-ph
     (infill-polyhedron g p1 p2 [4 10]))
