@@ -237,7 +237,11 @@
   [slice-curve-fn control-curves]
   (map->TensorProductPatch
    {:slice-fn       (fn [curves i]
-                      (slice-curve-fn (map #(protocols/curve-point % i) curves)))
+                      (slice-curve-fn (map (fn [curve]
+                                             (let [weight (:weight (meta curve))]
+                                               (cond-> (protocols/curve-point curve i)
+                                                 weight (c/weighted weight))))
+                                           curves)))
     :control-curves control-curves}))
 
 (defn bezier-patch
@@ -317,6 +321,23 @@
           (map->StitchedPatch {:perimeter-curve->fabric-path {}
                                :patches                      {}})
           patches))
+
+(defn cut-patch
+  "Cuts parametric patch to subselection defined in terms of i/j ranges"
+  ([patch i-range]
+   (cut-patch patch i-range [0 1]))
+  ([patch [i-from i-to] [j-from j-to]]
+   (parameter-assertion i-from)
+   (parameter-assertion i-to)
+   (parameter-assertion j-from)
+   (parameter-assertion j-to)
+   (assert (> i-to i-from) "start of the `i-range` must be lower then end")
+   (assert (> j-to j-from) "start of the `j-range` must be lower then end")
+   (reify protocols/PParametricPatch
+     (patch-point [_ i j]
+       (let [i-transformed (+ i-from (* i (- i-to i-from)))
+             j-transformed (+ j-from (* j (- j-to j-from)))]
+         (protocols/patch-point patch i-transformed j-transformed))))))
 
 (comment
   (require '[chisel.open-scad :as os])
