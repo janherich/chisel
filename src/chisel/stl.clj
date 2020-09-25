@@ -2,23 +2,15 @@
   "STL generation namespace"
   (:require [clojure.string :as string]
             [clojure.java.io :as io]
-            [chisel.coordinates :as c]))
+            [chisel.coordinates :as c]
+            [chisel.utils :as u]))
 
 (defn- facet-normal
   "Calculates vortex unit normal"
   [[v1 v2 v3]]
   (let [v1->v2 (c/difference v2 v1)
-        v1->v3 (c/difference v3 v1)
-        x1     (v1->v2 0)
-        y1     (v1->v2 1)
-        z1     (v1->v2 2)
-        x2     (v1->v3 0)
-        y2     (v1->v3 1)
-        z2     (v1->v2 2)]
-    (c/scale-vector (c/v [(- (* y1 z2) (* z1 y2))
-                          (- (* z1 x2) (* x1 z2))
-                          (- (* x1 y2) (* y1 x2))])
-                    1)))
+        v1->v3 (c/difference v3 v1)]
+    (c/scale-vector (u/cross-product v1->v2 v1->v3) 1)))
 
 (defn- format-coordinates [v]
   (format "%f %f %f" (v 0) (v 1) (v 2)))

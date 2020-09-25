@@ -24,8 +24,10 @@
 
 (defprotocol PParametricPatch
   "Protocol for parametric patches"
+  (patch-slice [this t]
+    "given parameter value `t`, returns patch slice")
   (patch-point [this i j]
-    "given paramteres values `i` and `j`, returns point on patch"))
+    "given parameter values `i` and `j`, returns point on patch"))
 
 (defprotocol PStichable
   "Protocol for stichable things"

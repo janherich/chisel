@@ -44,17 +44,13 @@
   [points-count curve-fn]
   (into [] (resolve-curve-xf points-count curve-fn) (range points-count)))
 
-(defn- parameter-assertion [t]
-  (assert (>= 1 t 0)
-          (format "parameter `t` has to be in (inclusive) range [0 1], :t = %s" t)))
-
 (defrecord BezierCurve [control-points]
   protocols/PParametricCurve
   (curve-point [_ t]
-    (parameter-assertion t)
+    (u/relative-parameter-assertion t)
     (c/project (de-casteljau t control-points)))
-  (polyline [_ points-count]
-    (resolve-curve points-count #(c/project (de-casteljau % control-points))))
+  (polyline [this points-count]
+    (resolve-curve points-count #(protocols/curve-point this %)))
   (closed? [_]
     (= (first control-points) (last control-points)))
   protocols/PTransformable
@@ -84,10 +80,10 @@
 (defrecord CompositeBezierCurve [control-points-sequence]
   protocols/PParametricCurve
   (curve-point [_ t]
-    (parameter-assertion t)
+    (u/relative-parameter-assertion t)
     (resolve-composite-curve-point t control-points-sequence))
-  (polyline [_ points-count]
-    (resolve-curve points-count #(resolve-composite-curve-point % control-points-sequence)))
+  (polyline [this points-count]
+    (resolve-curve points-count #(protocols/curve-point this %)))
   (closed? [_]
     (= (ffirst control-points-sequence)
        (last (last control-points-sequence))))
@@ -141,10 +137,10 @@
 (defrecord BSplineCurve [span-cp-tuples effective-span]
   protocols/PParametricCurve
   (curve-point [_ t]
-    (parameter-assertion t)
+    (u/relative-parameter-assertion t)
     (resolve-bspline-point t span-cp-tuples effective-span))
-  (polyline [_ points-count]
-    (resolve-curve points-count #(resolve-bspline-point % span-cp-tuples effective-span)))
+  (polyline [this points-count]
+    (resolve-curve points-count #(protocols/curve-point this %)))
   (closed? [_]
     (and (= [0 1] effective-span)
          (= (last (first span-cp-tuples))
@@ -194,6 +190,119 @@
   [opts]
   (b-spline (clamp-knot-vector opts)))
 
+(defn clamped-uniform-b-spline
+  "Creates new clamped b-spline curve with uniform knot vector"
+  [{:keys [control-points order] :as opts}]
+  (let [upper-limit (- (count control-points) order)
+        knot-vector (mapv #(/ % upper-limit) (range 1 upper-limit))]
+    (b-spline (clamp-knot-vector (assoc opts :knot-vector knot-vector)))))
+
+(defn- search-tree [{:keys [range lower-range upper-range interpolate-fn]} polyline t]
+  (let [[start end] range]
+    (cond
+      (< t start) (search-tree lower-range polyline t)
+      (> t end)   (search-tree upper-range polyline t)
+      :else       (interpolate-fn t polyline))))
+
+(defrecord UniformCurve [query-tree polyline closed?]
+  protocols/PParametricCurve
+  (curve-point [_ t]
+    (u/relative-parameter-assertion t)
+    (search-tree query-tree polyline t))
+  (polyline [this points-count]
+    (resolve-curve points-count #(protocols/curve-point this %)))
+  (closed? [_] closed?)
+  protocols/PTransformable
+  (linear-transform [this matrix]
+    (update this :polyline
+            #(mapv (fn [p] (protocols/linear-transform p matrix)) %))))
+
+(def ^:private axis->idx {:x 0 :y 1 :z 2})
+
+(defn- tree-node [ranges-vector]
+  (let [ranges-count      (count ranges-vector)
+        median-index      (int (/ ranges-count 2))
+        median-plus-index (inc median-index)]
+    (cond-> (get ranges-vector median-index)
+      (< 0 median-index)
+      (assoc :lower-range (tree-node (subvec ranges-vector 0 median-index)))
+      (< median-plus-index ranges-count)
+      (assoc :upper-range (tree-node (subvec ranges-vector median-plus-index ranges-count))))))
+
+(defn axis-uniform-curve
+  "Creates curve from polyline vector providing uniform distribution of points along given axis.
+  Polyline must be monotonically increasing/decreasing along given axis."
+  [polyline axis]
+  (let [axis-getter    (axis->idx axis)
+        first-point    (first polyline)
+        last-point     (peek polyline)
+        min-axis-value (first-point axis-getter)
+        max-axis-value (last-point axis-getter)
+        axis-range     (- max-axis-value min-axis-value)
+        increasing?    (pos? axis-range)
+        ranges         (into []
+                             (map-indexed (fn [idx [start-point end-point]]
+                                            (let [start-range (/ (- (start-point axis-getter) min-axis-value)
+                                                                 axis-range)
+                                                  end-range   (/ (- (end-point axis-getter) min-axis-value)
+                                                                 axis-range)
+                                                  diff        (- end-range start-range)]
+                                              (if increasing?
+                                                (assert (pos? diff) "Polyline must be increasing")
+                                                (assert (neg? diff) "Polyline must be decreasing"))
+                                              {:range          [start-range end-range]
+                                               :interpolate-fn (fn [t polyline]
+                                                                 (c/linear-combination (/ (- t start-range)
+                                                                                          diff)
+                                                                                       (get polyline idx)
+                                                                                       (get polyline (inc idx))))})))
+                             (partition 2 1 polyline))]
+    (map->UniformCurve {:query-tree (tree-node ranges)
+                        :closed?    (= first-point last-point)
+                        :polyline   polyline})))
+
+(defn uniform-curve
+  "Creates curve from polyline vector providing uniform distribution of points."
+  [polyline]
+  (let [overall-length (u/polyline-length polyline)
+        ranges         (first
+                        (reduce (fn [[ranges current-length idx] line]
+                                  (let [new-length  (+ current-length (u/line-length line))
+                                        start-range (/ current-length overall-length)
+                                        end-range   (/ new-length overall-length)
+                                        diff        (- end-range start-range)]
+                                    [(conj ranges {:range          [start-range end-range]
+                                                   :interpolate-fn (fn [t polyline]
+                                                                     (c/linear-combination (/ (- t start-range)
+                                                                                              diff)
+                                                                                           (get polyline idx)
+                                                                                           (get polyline (inc idx))))})
+                                     new-length
+                                     (inc idx)]))
+                                [[] 0 0]
+                                (partition 2 1 polyline)))]
+    (map->UniformCurve {:query-tree (tree-node ranges)
+                        :closed?    (= (first polyline) (peek polyline))
+                        :polyline   polyline})))
+
+(defn cut-curve
+  "Cuts parametric curve to subselection defined in terms of [0 1] parameter range"
+  [curve [from to]]
+  (u/relative-parameter-assertion from)
+  (u/relative-parameter-assertion to)
+  (assert (> to from) "Start of the parameter range must be lower then end")
+  (letfn [(transform [t] (+ from (* t (- to from))))]
+    (reify
+      protocols/PParametricCurve
+      (curve-point [_ t]
+        (protocols/curve-point curve (transform t)))
+      (polyline [this points-count]
+        (resolve-curve points-count #(protocols/curve-point this %)))
+      (closed? [_] false)
+      protocols/PTransformable
+      (linear-transform [_ matrix]
+        (cut-curve (protocols/linear-transform curve matrix) [from to])))))
+
 (defn- resolve-patch-points
   "Resolves patch points based on i-j resolution + slice function"
   [i-count j-count slice-fn]
@@ -219,7 +328,9 @@
 
 (defrecord TensorProductPatch [slice-fn control-curves]
   protocols/PParametricPatch
-  (patch-point [_ i j]
+  (patch-slice [this t]
+    (slice-fn control-curves t))
+  (patch-point [this i j]
     (protocols/curve-point (slice-fn control-curves i) j))
   protocols/PPatch
   (triangle-mesh [_ [i-count j-count]]
@@ -236,10 +347,10 @@
   "Creates new tensor product patch"
   [slice-curve-fn control-curves]
   (map->TensorProductPatch
-   {:slice-fn       (fn [curves i]
+   {:slice-fn       (fn [curves t]
                       (slice-curve-fn (map (fn [curve]
                                              (let [weight (:weight (meta curve))]
-                                               (cond-> (protocols/curve-point curve i)
+                                               (cond-> (protocols/curve-point curve t)
                                                  weight (c/weighted weight))))
                                            curves)))
     :control-curves control-curves}))
@@ -260,6 +371,16 @@
   "Creates new b-splie-patch"
   [{:keys [control-curves] :as opts}]
   (let [clamped-opts (clamp-knot-vector opts)]
+    (tensor-product-patch (fn [points]
+                            (b-spline (assoc clamped-opts :control-points points)))
+                          control-curves)))
+
+(defn clamped-uniform-b-spline-patch
+  "Creates new b-splie-patch"
+  [{:keys [control-curves order] :as opts}]
+  (let [upper-limit  (- (count control-curves) order)
+        knot-vector  (mapv #(/ % upper-limit) (range 1 upper-limit))
+        clamped-opts (clamp-knot-vector (assoc opts :knot-vector knot-vector))]
     (tensor-product-patch (fn [points]
                             (b-spline (assoc clamped-opts :control-points points)))
                           control-curves)))
@@ -326,18 +447,25 @@
   "Cuts parametric patch to subselection defined in terms of i/j ranges"
   ([patch i-range]
    (cut-patch patch i-range [0 1]))
-  ([patch [i-from i-to] [j-from j-to]]
-   (parameter-assertion i-from)
-   (parameter-assertion i-to)
-   (parameter-assertion j-from)
-   (parameter-assertion j-to)
-   (assert (> i-to i-from) "start of the `i-range` must be lower then end")
-   (assert (> j-to j-from) "start of the `j-range` must be lower then end")
-   (reify protocols/PParametricPatch
-     (patch-point [_ i j]
-       (let [i-transformed (+ i-from (* i (- i-to i-from)))
-             j-transformed (+ j-from (* j (- j-to j-from)))]
-         (protocols/patch-point patch i-transformed j-transformed))))))
+  ([patch i-range j-range]
+   (-> patch
+       (update :control-curves #(map (fn [curve]
+                                       (with-meta (cut-curve curve i-range) (meta curve))) %))
+       (update :slice-fn #(comp (fn [curve]
+                                  (cut-curve curve j-range)) %)))))
+
+(defn mapped-curve
+  "Map curve to patch"
+  [patch curve]
+  (reify protocols/PParametricCurve
+    (protocols/curve-point [_ t]
+      (let [point (protocols/curve-point curve t)]
+        (protocols/patch-point patch (point 0) (point 1))))
+    (protocols/polyline [_ points-count]
+      (map #(protocols/patch-point patch (% 0) (% 1))
+           (protocols/polyline curve points-count)))
+    (protocols/closed? [_]
+      (protocols/closed? curve))))
 
 (comment
   (require '[chisel.open-scad :as os])

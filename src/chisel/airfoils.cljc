@@ -4,7 +4,10 @@
             [chisel.protocols :as protocols]
             [chisel.coordinates :as c]
             [chisel.conic-sections :as conics]
-            [chisel.projections :as p]))
+            [chisel.projections :as p]
+            [chisel.surface-infills :as surface-infills]
+            [chisel.open-scad :as os]
+            [chisel.stl :as stl]))
 
 (defn airfoil
   "Simple airfoil as composite bezier curve"
@@ -20,6 +23,7 @@
                                                     (c/translate-matrix chord->top))]
     (curves/composite-bezier-curve [[front front-up middle-up]
                                     [middle-up rear-up rear]])))
+
 (comment
   (defn wrap-flanges [airfoil-curve thickness front rear]
     (let [front->rear (c/difference rear front)

@@ -1,16 +1,26 @@
 (ns chisel.utils
-  "Utility fns")
+  "Utility fns"
+  (:require [chisel.coordinates :as c]))
+
+(defn relative-parameter-assertion
+  "Asserts relative parameter value"
+  [t]
+  (assert (>= 1 t 0)
+          (format "parameter `t` has to be in (inclusive) range [0 1], :t = %s" t)))
 
 (defn merge-triangle-meshes
-  "Merge 2 triangle meshes together"
-  [mesh-1 {:keys [points faces]}]
-  (let [offset (count (:points mesh-1))]
-    (-> mesh-1
-        (update :points into points)
-        (update :faces into (map (fn [[v1 v2 v3]]
-                                   [(+ v1 offset) (+ v2 offset) (+ v3 offset)])) faces))))
+  "Merge 2 or more triangle meshes together"
+  ([mesh-1 {:keys [points faces]}]
+   (let [offset (count (:points mesh-1))]
+     (-> mesh-1
+         (update :points into points)
+         (update :faces into (map (fn [[v1 v2 v3]]
+                                    [(+ v1 offset) (+ v2 offset) (+ v3 offset)])) faces))))
+  ([mesh-1 mesh-2 & meshes]
+   (reduce merge-triangle-meshes mesh-1 (cons mesh-2 meshes))))
+
 (defn triangulate-rectangular-mesh
-  "Returns set of faces for [i j] rectangular mesh"
+  "Returns vector of faces for [i j] rectangular mesh"
   [i-count j-count]
   (transduce (map (fn [i]
                     (let [offset (* i j-count)]
@@ -25,6 +35,41 @@
              into
              (range (dec i-count))))
 
+(defn triangulate-triangle-mesh
+  "Returns vector of faces for triangular mesh"
+  [side-points]
+  (transduce (map (fn [i]
+                    (let [offset  (/ (* i (inc i)) 2)
+                          final-a (+ i offset)
+                          final-c (+ final-a (inc i))
+                          final-d (inc final-c)]
+                      (conj (into []
+                                  (mapcat (fn [j]
+                                            (let [a (+ j offset)
+                                                  b (inc a)
+                                                  c (+ b i)
+                                                  d (inc c)]
+                                              [[a d c] [a b d]])))
+                                  (range i))
+                            [final-a final-d final-c]))))
+             into
+             (range (dec side-points))))
+
+(defn right-angle-triangle-points
+  "Returns 2d right angle triangle points"
+  ([i j resolution]
+   (right-angle-triangle-points [0 0] i j resolution))
+  ([[origin-x origin-y] i j resolution]
+   (let [i-step (/ i (dec resolution))
+         j-step (/ j (dec resolution))]
+     (transduce (map (fn [i]
+                       (map (fn [j]
+                              [(+ origin-x (* i i-step))
+                               (+ origin-y (* j j-step))])
+                            (range (inc i)))))
+                into
+                (range resolution)))))
+
 (defn reverse-polyhedron-faces
   "Reverse direction of polyhedron faces"
   [polyhedron]
@@ -34,6 +79,33 @@
   "Given 2 shorter sides of right-angle triangle, return the length of the longest side"
   [a b]
   (rationalize (Math/sqrt (+ (Math/pow a 2) (Math/pow b 2)))))
+
+(defn cross-product
+  "Calculates cross product of two 3d vectors"
+  [v1 v2]
+  (let [x1 (v1 0)
+        y1 (v1 1)
+        z1 (v1 2)
+        x2 (v2 0)
+        y2 (v2 1)
+        z2 (v2 2)]
+    (c/v [(- (* y1 z2) (* z1 y2))
+          (- (* z1 x2) (* x1 z2))
+          (- (* x1 y2) (* y1 x2))])))
+
+(defn triangle-mesh-surface
+  "Calculates surface of the triangle mesh"
+  [{:keys [points faces]}]
+  (Math/abs
+   (/ (reduce (fn [surface [v1 v2 v3]]
+                (let [p1     (points v1)
+                      p2     (points v2)
+                      p3     (points v3)
+                      p1->p2 (c/difference p2 p1)
+                      p1->p3 (c/difference p3 p1)]
+                  (+ surface (c/vector-length (cross-product p1->p2 p1->p3)))))
+              0 faces)
+      2)))
 
 (defn triangle-mesh-volume
   "Calculates volume of the triangle mesh by signed tetrahedron volume method"
@@ -51,3 +123,13 @@
                    v123 (* (p1 0) (p2 1) (p3 2))]
                (+ volume (* 1/6 (- (+ v231 v312 v123) v321 v132 v213)))))
            0 faces)))
+
+(defn line-length
+  "Length of the line"
+  [[start end]]
+  (c/vector-length (c/difference end start)))
+
+(defn polyline-length
+  "Calculates length of the given polyline"
+  [polyline]
+  (transduce (map line-length) + (partition 2 1 polyline)))
