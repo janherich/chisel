@@ -35,6 +35,20 @@
       :knot-vector knot-vector
       :order 2})))
 
+(defn circle-arc-point
+  "Given points a, b and degrees, returns tuple of `[c-point c-weight]` for construction of arc."
+  [a b degrees & {:keys [counterclockwise?]}]
+  (let [alpha        (Math/toRadians (/ (- 180 degrees) 2))
+          a->b         (c/difference a b)
+          a-b-distance (c/vector-length a->b)
+          heigth       (/ a-b-distance (Math/tan alpha) 2)]
+    [(protocols/linear-transform
+      (c/linear-combination 1/2 a b)
+      (c/translate-matrix
+       (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)
+                       heigth)))
+     (Math/sin alpha)]))
+
 (defn circle-arc
   "Weighted coordinates for circle arc"
   [a b degrees & {:keys [counterclockwise?]}]
@@ -52,18 +66,9 @@
                                             base-c-distance)))]
       (into (circle-arc a c half-angle :counterclockwise? counterclockwise?)
             (circle-arc c b half-angle :counterclockwise? counterclockwise?)))
-    (let [alpha        (Math/toRadians (/ (- 180 degrees) 2))
-          a->b         (c/difference a b)
-          a-b-distance (c/vector-length a->b)
-          heigth       (/ a-b-distance (Math/tan alpha) 2)]
+    (let [[c-point c-weight] (circle-arc-point a b degrees :counterclockwise? counterclockwise?)]
       [[a
-        (c/weighted
-         (protocols/linear-transform
-          (c/linear-combination 1/2 a b)
-          (c/translate-matrix
-           (c/scale-vector (c/orthogonal-vector a->b :counterclockwise? counterclockwise?)
-                           heigth)))
-         (Math/sin alpha))
+        (c/weighted c-point c-weight)
         b]])))
 
 (def torus

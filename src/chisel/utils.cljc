@@ -1,6 +1,14 @@
 (ns chisel.utils
   "Utility fns"
-  (:require [chisel.coordinates :as c]))
+  (:require [chisel.coordinates :as c]
+            [chisel.protocols :as protocols]
+            [clojure.string :as string]
+            [clojure.java.io :as io]))
+
+;; Utility fn to write to file
+(defn write-to-file [path & content]
+  (with-open [w (io/writer path)]
+    (.write w (string/join "\n" content))))
 
 (defn relative-parameter-assertion
   "Asserts relative parameter value"
@@ -133,3 +141,65 @@
   "Calculates length of the given polyline"
   [polyline]
   (transduce (map line-length) + (partition 2 1 polyline)))
+
+(defn make-range-tree
+  "Constructs range-tree structure out of sorted vector of maps, each of them expecting to contain
+  at least `:range` and `:interpolate-fn` keys.
+  Range of each item should be in `[lower upper]` interval, interpolate fn is function taking at 
+  least one argument `t` belonging to the interval range."
+  [ranges-vector]
+  (let [ranges-count      (count ranges-vector)
+        median-index      (int (/ ranges-count 2))
+        median-plus-index (inc median-index)]
+    (cond-> (get ranges-vector median-index)
+      (< 0 median-index)
+      (assoc :lower-range (make-range-tree (subvec ranges-vector 0 median-index)))
+      (< median-plus-index ranges-count)
+      (assoc :upper-range (make-range-tree (subvec ranges-vector median-plus-index ranges-count))))))
+
+(defn search-range-tree
+  "Given range-tree structure constructed by `make-range-tree` fn, parameter `t` and any number
+  of following arguments, this function will effeciently search for the record which has `t`
+  in (inclusive) range and call the record `interpolate` fn with `t` and any number of following
+  arguments."
+  [{:keys [range lower-range upper-range interpolate-fn]} t & args]
+  (let [[start end] range]
+    (cond
+      (< t start) (apply search-range-tree lower-range t args)
+      (> t end)   (apply search-range-tree upper-range t args)
+      :else       (apply interpolate-fn t args))))
+
+(defn prepare-polyline [polyline]
+  (let [first-point (first polyline)
+        last-point  (peek polyline)]
+    (let [second-point  (second polyline)
+          butlast-point (peek (pop polyline))]
+      (if (= first-point last-point)
+        (into [butlast-point] (conj polyline second-point))
+        (let [prepend-point (c/sum first-point (c/difference first-point second-point))
+              append-point  (c/sum last-point (c/difference last-point butlast-point))]
+          (into [prepend-point] (conj polyline append-point)))))))
+
+(defn distanced-path
+  "Returns polyline distance by perpendicular distance from original polyline vector"
+  [polyline distance]
+  (mapv (fn [[a b c]]
+          (let [a-orthogonal   (c/orthogonal-vector
+                                (c/scale-vector (c/difference a b) distance))
+                c-orthogonal   (c/orthogonal-vector
+                                (c/scale-vector (c/difference b c) distance))
+                orthogonal-sum (c/sum a-orthogonal c-orthogonal)
+                b-distanced    (c/sum
+                                b
+                                (if (= a-orthogonal c-orthogonal)
+                                  a-orthogonal
+                                  (c/scale-vector orthogonal-sum
+                                                  (Math/abs (/ distance
+                                                               (Math/cos
+                                                                (Math/atan (/ (c/vector-length
+                                                                               (c/difference a-orthogonal
+                                                                                             c-orthogonal))
+                                                                              (c/vector-length orthogonal-sum)))))))))]
+            b-distanced))
+          (partition 3 1 (prepare-polyline polyline))))
+

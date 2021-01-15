@@ -10,6 +10,8 @@
   (curve-point [_ _] point)
   (polyline [_ points-count] (repeat points-count point))
   (closed? [_] true)
+  protocols/PControlPointsCurve
+  (control-points [_] [point])
   protocols/PTransformable
   (linear-transform [_ matrix]
     (update :point #(protocols/linear-transform % matrix))))
@@ -44,6 +46,10 @@
   [points-count curve-fn]
   (into [] (resolve-curve-xf points-count curve-fn) (range points-count)))
 
+(defn- closed-curve? [curve]
+  (= (protocols/curve-point curve 0)
+     (protocols/curve-point curve 1)))
+
 (defrecord BezierCurve [control-points]
   protocols/PParametricCurve
   (curve-point [_ t]
@@ -51,8 +57,10 @@
     (c/project (de-casteljau t control-points)))
   (polyline [this points-count]
     (resolve-curve points-count #(protocols/curve-point this %)))
-  (closed? [_]
-    (= (first control-points) (last control-points)))
+  (closed? [this]
+    (closed-curve? this))
+  protocols/PControlPointsCurve
+  (control-points [_] control-points)
   protocols/PTransformable
   (linear-transform [this matrix]
     (update this :control-points #(map (fn [cp] (protocols/linear-transform cp matrix)) %))))
@@ -84,9 +92,10 @@
     (resolve-composite-curve-point t control-points-sequence))
   (polyline [this points-count]
     (resolve-curve points-count #(protocols/curve-point this %)))
-  (closed? [_]
-    (= (ffirst control-points-sequence)
-       (last (last control-points-sequence))))
+  (closed? [this]
+    (closed-curve? this))
+  protocols/PControlPointsCurve
+  (control-points [_] (concat control-points-sequence))
   protocols/PTransformable
   (linear-transform [this matrix]
     (update this :control-points-sequence
@@ -134,17 +143,17 @@
          second
          c/project)))
 
-(defrecord BSplineCurve [span-cp-tuples effective-span]
+(defrecord BSplineCurve [control-points span-cp-tuples effective-span]
   protocols/PParametricCurve
   (curve-point [_ t]
     (u/relative-parameter-assertion t)
     (resolve-bspline-point t span-cp-tuples effective-span))
   (polyline [this points-count]
     (resolve-curve points-count #(protocols/curve-point this %)))
-  (closed? [_]
-    (and (= [0 1] effective-span)
-         (= (last (first span-cp-tuples))
-            (last (last span-cp-tuples)))))
+  (closed? [this]
+    (closed-curve? this))
+  protocols/PControlPointsCurve
+  (control-points [_] control-points)
   protocols/PTransformable
   (linear-transform [this matrix]
     (update this :span-cp-tuples
@@ -166,11 +175,12 @@
                  (every? (fn [[a b]] (<= a b)) (partition 2 1 knot-vector)))
             "Knot vector needs to be non-decreasing sequence of numbers, normalized on [0 1] interval")))
 
-(defn- process-b-spline [{:keys [control-points knot-vector order]}]
-  {:span-cp-tuples (map vector
-                        (map (juxt first last) (partition (+ order 2) 1 knot-vector))
-                        control-points)
-   :effective-span [(nth knot-vector order) (nth knot-vector (count control-points))]})
+(defn- process-b-spline [{:keys [control-points knot-vector order] :as opts}]
+  (merge opts
+         {:span-cp-tuples (map vector
+                               (map (juxt first last) (partition (+ order 2) 1 knot-vector))
+                               control-points)
+          :effective-span [(nth knot-vector order) (nth knot-vector (count control-points))]}))
 
 (defn b-spline
   "Creates new b-spline curve"
@@ -197,37 +207,23 @@
         knot-vector (mapv #(/ % upper-limit) (range 1 upper-limit))]
     (b-spline (clamp-knot-vector (assoc opts :knot-vector knot-vector)))))
 
-(defn- search-tree [{:keys [range lower-range upper-range interpolate-fn]} polyline t]
-  (let [[start end] range]
-    (cond
-      (< t start) (search-tree lower-range polyline t)
-      (> t end)   (search-tree upper-range polyline t)
-      :else       (interpolate-fn t polyline))))
-
-(defrecord UniformCurve [query-tree polyline closed?]
+(defrecord UniformCurve [range-tree polyline]
   protocols/PParametricCurve
   (curve-point [_ t]
     (u/relative-parameter-assertion t)
-    (search-tree query-tree polyline t))
+    (u/search-range-tree range-tree t polyline))
   (polyline [this points-count]
     (resolve-curve points-count #(protocols/curve-point this %)))
-  (closed? [_] closed?)
+  (closed? [this]
+    (closed-curve? this))
+  protocols/PControlPointsCurve
+  (control-points [_] polyline)
   protocols/PTransformable
   (linear-transform [this matrix]
     (update this :polyline
             #(mapv (fn [p] (protocols/linear-transform p matrix)) %))))
 
 (def ^:private axis->idx {:x 0 :y 1 :z 2})
-
-(defn- tree-node [ranges-vector]
-  (let [ranges-count      (count ranges-vector)
-        median-index      (int (/ ranges-count 2))
-        median-plus-index (inc median-index)]
-    (cond-> (get ranges-vector median-index)
-      (< 0 median-index)
-      (assoc :lower-range (tree-node (subvec ranges-vector 0 median-index)))
-      (< median-plus-index ranges-count)
-      (assoc :upper-range (tree-node (subvec ranges-vector median-plus-index ranges-count))))))
 
 (defn axis-uniform-curve
   "Creates curve from polyline vector providing uniform distribution of points along given axis.
@@ -257,8 +253,7 @@
                                                                                        (get polyline idx)
                                                                                        (get polyline (inc idx))))})))
                              (partition 2 1 polyline))]
-    (map->UniformCurve {:query-tree (tree-node ranges)
-                        :closed?    (= first-point last-point)
+    (map->UniformCurve {:range-tree (u/make-range-tree ranges)
                         :polyline   polyline})))
 
 (defn uniform-curve
@@ -281,9 +276,26 @@
                                      (inc idx)]))
                                 [[] 0 0]
                                 (partition 2 1 polyline)))]
-    (map->UniformCurve {:query-tree (tree-node ranges)
-                        :closed?    (= (first polyline) (peek polyline))
+    (map->UniformCurve {:range-tree (u/make-range-tree ranges)
                         :polyline   polyline})))
+
+(defn invert-curve
+  "Inverts evaluation of parametric curve "
+  [curve]
+  (letfn [(transform [t] (- 1 t))]
+    (with-meta
+      (reify
+        protocols/PParametricCurve
+        (curve-point [_ t]
+          (protocols/curve-point curve (transform t)))
+        (polyline [this points-count]
+          (resolve-curve points-count #(protocols/curve-point this %)))
+        (closed? [this]
+          (closed-curve? this))
+        protocols/PTransformable
+        (linear-transform [_ matrix]
+          (invert-curve (protocols/linear-transform curve matrix))))
+      (meta curve))))
 
 (defn cut-curve
   "Cuts parametric curve to subselection defined in terms of [0 1] parameter range"
@@ -292,16 +304,55 @@
   (u/relative-parameter-assertion to)
   (assert (> to from) "Start of the parameter range must be lower then end")
   (letfn [(transform [t] (+ from (* t (- to from))))]
-    (reify
-      protocols/PParametricCurve
-      (curve-point [_ t]
-        (protocols/curve-point curve (transform t)))
-      (polyline [this points-count]
-        (resolve-curve points-count #(protocols/curve-point this %)))
-      (closed? [_] false)
-      protocols/PTransformable
-      (linear-transform [_ matrix]
-        (cut-curve (protocols/linear-transform curve matrix) [from to])))))
+    (with-meta
+      (reify
+        protocols/PParametricCurve
+        (curve-point [_ t]
+          (protocols/curve-point curve (transform t)))
+        (polyline [this points-count]
+          (resolve-curve points-count #(protocols/curve-point this %)))
+        (closed? [this]
+          (closed-curve? this))
+        protocols/PTransformable
+        (linear-transform [_ matrix]
+          (cut-curve (protocols/linear-transform curve matrix) [from to])))
+      (meta curve))))
+
+(defn join-curves
+  "Joins more parametric curves into one"
+  [& curves]
+  (assert (apply = (map meta curves)) "Meta information of joined curves must be the same")
+  (let [parameter-ratio (/ 1 (count curves))]
+    (with-meta
+      (reify
+        protocols/PParametricCurve
+        (curve-point [_ t]
+          (let [[curve local-t] (if (= t 1)
+                                  [(last curves) 1]
+                                  [(nth curves (quot t parameter-ratio))
+                                   (/ (rem t parameter-ratio) parameter-ratio)])]
+            (protocols/curve-point curve local-t)))
+        (polyline [this points-count]
+          (resolve-curve points-count #(protocols/curve-point this %)))
+        (closed? [this]
+          (closed-curve? this))
+        protocols/PTransformable
+        (linear-transform [_ matrix]
+          (apply join-curves (map #(protocols/linear-transform % matrix) curves))))
+      (meta (first curves)))))
+
+(defonce ^:private curve-cache (atom {}))
+
+(defn unify-curve
+  "Unifies curve of specified length for given axis (`:z` by default) and caches the result"
+  ([curve unification-length]
+   (unify-curve curve unification-length :z))
+  ([curve unification-length axis]
+   (if-let [unified (get @curve-cache curve)]
+     unified
+     (let [unified (axis-uniform-curve (protocols/polyline curve unification-length) axis)]
+       (swap! curve-cache assoc curve unified)
+       unified))))
 
 (defn- resolve-patch-points
   "Resolves patch points based on i-j resolution + slice function"
@@ -361,14 +412,14 @@
   (tensor-product-patch bezier-curve control-curves))
 
 (defn b-spline-patch
-  "Creates new b-splie-patch"
+  "Creates new b-spline-patch"
   [{:keys [control-curves] :as opts}]
   (tensor-product-patch (fn [points]
                           (b-spline (assoc opts :control-points points)))
                         control-curves))
 
 (defn clamped-b-spline-patch
-  "Creates new b-splie-patch"
+  "Creates new clamped b-spline-patch"
   [{:keys [control-curves] :as opts}]
   (let [clamped-opts (clamp-knot-vector opts)]
     (tensor-product-patch (fn [points]
@@ -376,7 +427,7 @@
                           control-curves)))
 
 (defn clamped-uniform-b-spline-patch
-  "Creates new b-splie-patch"
+  "Creates new clamped uniform b-spline-patch"
   [{:keys [control-curves order] :as opts}]
   (let [upper-limit  (- (count control-curves) order)
         knot-vector  (mapv #(/ % upper-limit) (range 1 upper-limit))
@@ -454,18 +505,25 @@
        (update :slice-fn #(comp (fn [curve]
                                   (cut-curve curve j-range)) %)))))
 
+(defn reverse-patch
+  "Reverses patch-orientation"
+  [{:keys [slice-fn] :as patch}]
+  (assoc patch :slice-fn (fn [curves t]
+                           (slice-fn curves (- 1 t)))))
+
 (defn mapped-curve
   "Map curve to patch"
   [patch curve]
-  (reify protocols/PParametricCurve
+  (reify
+    protocols/PParametricCurve
     (protocols/curve-point [_ t]
       (let [point (protocols/curve-point curve t)]
         (protocols/patch-point patch (point 0) (point 1))))
     (protocols/polyline [_ points-count]
       (map #(protocols/patch-point patch (% 0) (% 1))
            (protocols/polyline curve points-count)))
-    (protocols/closed? [_]
-      (protocols/closed? curve))))
+    (protocols/closed? [this]
+      (closed-curve? this))))
 
 (comment
   (require '[chisel.open-scad :as os])

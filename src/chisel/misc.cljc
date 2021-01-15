@@ -7,7 +7,9 @@
             [chisel.surface-infills :as surface-infills]
             [chisel.utils :as u]
             [chisel.open-scad :as os]
-            [chisel.stl :as stl]))
+            [chisel.stl :as stl]
+            [chisel.gcode :as gcode]
+            [chisel.gcode-layers :as gcode-layers]))
 
 (defn double-walled-tube [diameter wall-thickness height]
   (let [outer-r (/ diameter 2)
@@ -38,28 +40,12 @@
    (let [[p1 p2] (double-walled-tube diameter wall-thickness height)]
      (surface-infills/corrugated-surface p1 p2
       x-corrugations 2 y-corrugations (int (* Math/PI diameter))
-      #_:top-skin? true
-      #_:bottom-skin? true))))
+      :top-skin? true
+      #_:bottom-skin? #_true))))
 
 (defn triangle-tube [diameter wall-thickness height x y resolution]
   (let [[p1 p2] (double-walled-tube diameter wall-thickness height)]
     (surface-infills/triangle-infill p1 p2 x y resolution)))
-
-(defn rectangular-panel [width height thickness]
-  (let [bottom-panel (curves/bezier-patch
-                      [(curves/bezier-curve [(c/v [0 0]) (c/v [width 0])])
-                       (curves/bezier-curve [(c/v [0 height]) (c/v [width height])])])
-        top-panel    (protocols/linear-transform bottom-panel (c/translate-matrix [0 0 thickness]))]
-    [bottom-panel
-     top-panel]))
-
-(def panel-test
-  (let [[top bottom] (rectangular-panel 10 10 5)]
-    #_(u/merge-triangle-meshes)
-    #_(surface-infills/double-corrugated-triangle-infill top bottom 3 3 100)
-    (surface-infills/corrugated-surface top bottom 1 2 1 2)
-    #_(surface-infills/connect-surfaces top bottom (c/v [0 0]) (c/v [0 1]) 2)
-    #_(surface-infills/connect-surfaces top bottom (c/v [1 0]) (c/v [1 1]) 2)))
 
 (def shape-test
   (let [top (curves/bezier-patch
@@ -81,3 +67,70 @@
     #_(surface-infills/connect-surfaces top bottom (c/v [1 0]) (c/v [1 1]) 2)
     #_(surface-infills/connect-surfaces top bottom (c/v [0 0]) (c/v [0 1]) 2)
     #_(surface-infills/reinforcing-bands top bottom 5 1/5 [101 10])))
+
+(def ^:private layers-per-cm 40)
+
+(defn rectangular-panel
+  ([width height thickness]
+   (rectangular-panel width height thickness [0 0]))
+  ([width height thickness [x y]]
+   (let [bottom-panel (curves/bezier-patch
+                       [(curves/bezier-curve [(c/v [x y 0]) (c/v [x y height])])
+                        (curves/bezier-curve [(c/v [(+ x width) y 0]) (c/v [(+ x width) y height])])])
+         top-panel    (protocols/linear-transform
+                       bottom-panel (c/translate-matrix [0 thickness 0]))]
+     [bottom-panel
+      top-panel])))
+
+(defn panel-gcode []
+  (let [[face-1 face-2] (rectangular-panel 100 100 10 [100 150])]
+    (merge (gcode-layers/corrugated-panel-descriptor face-1 face-2 10
+                                                 (* layers-per-cm 10)
+                                                 2)
+           {:skirt-polyline [[50 50] [250 50] [250 250] [50 250] [50 50]]})))
+
+
+(defn curved-closed-panel
+  [radius thickness height]
+  (let [bottom-r     (- radius thickness)
+        top-panel    (curves/clamped-b-spline-patch
+                      {:control-curves [(curves/bezier-curve [(c/v [0 0 0]) (c/v [0 0 height])])
+                                        (curves/bezier-curve [(c/v [0 0 0]) (c/v [0 0 height])])
+                                        (curves/bezier-curve [(c/v [(- radius) 0 0]) (c/v [(- radius) 0 height])])
+                                        (with-meta
+                                          (curves/bezier-curve [(c/v [(- radius) radius 0]) (c/v [(- radius) radius height])])
+                                          {:weight conics/WEIGHT_90})
+                                        (curves/bezier-curve [(c/v [0 radius 0]) (c/v [0 radius height])])
+                                        (with-meta
+                                          (curves/bezier-curve [(c/v [radius radius 0]) (c/v [radius radius height])])
+                                          {:weight conics/WEIGHT_90})
+                                        (curves/bezier-curve [(c/v [radius 0 0]) (c/v [radius 0 height])])
+                                        (curves/bezier-curve [(c/v [0 0 0]) (c/v [0 0 height])])
+                                        (curves/bezier-curve [(c/v [0 0 0]) (c/v [0 0 height])])]
+                       :knot-vector    [1/4 1/4 2/4 2/4 3/4 3/4]
+                       :order          2})
+        bottom-panel (curves/clamped-b-spline-patch
+                      {:control-curves [(curves/bezier-curve [(c/v [0 thickness 0]) (c/v [0 thickness height])])
+                                        (curves/bezier-curve [(c/v [0 thickness 0]) (c/v [0 thickness height])])
+                                        (curves/bezier-curve [(c/v [(- bottom-r) thickness 0]) (c/v [(- bottom-r) thickness height])])
+                                        (with-meta
+                                          (curves/bezier-curve [(c/v [(- bottom-r) bottom-r 0]) (c/v [(- bottom-r) bottom-r height])])
+                                          {:weight conics/WEIGHT_90})
+                                        (curves/bezier-curve [(c/v [0 bottom-r 0]) (c/v [0 bottom-r height])])
+                                        (with-meta
+                                          (curves/bezier-curve [(c/v [bottom-r bottom-r 0]) (c/v [bottom-r bottom-r height])])
+                                          {:weight conics/WEIGHT_90})
+                                        (curves/bezier-curve [(c/v [bottom-r thickness 0]) (c/v [bottom-r thickness height])])
+                                        (curves/bezier-curve [(c/v [0 thickness 0]) (c/v [0 thickness height])])
+                                        (curves/bezier-curve [(c/v [0 thickness 0]) (c/v [0 thickness height])])]
+                       :knot-vector    [1/4 1/4 2/4 2/4 3/4 3/4]
+                       :order          2})]
+    #_(os/write
+      (os/generate-polyhedron
+       (protocols/triangle-mesh top-panel [2 200]))
+      (os/generate-polyhedron
+       (protocols/triangle-mesh bottom-panel [2 200])))
+    (gcode-layers/ribbed-panel-descriptor top-panel bottom-panel
+                                          (int (Math/ceil (/ height thickness 3)))
+                                          (* height 5)
+                                          200)))

@@ -1,7 +1,7 @@
 (ns chisel.open-scad
   "OpenSCAD interoperability methods"
   (:require [clojure.string :as string]
-            [clojure.java.io :as io]))
+            [chisel.utils :as u]))
 
 ;; 2D Open Scad primitives
 (defn generate-polygon
@@ -45,9 +45,4 @@
   [height & items]
   (str (format "linear_extrude(height=%s) {" height) (string/join " " items) "}"))
 
-;; Utility fn to write to file
-(defn write-to-file [path & content]
-  (with-open [w (io/writer path)]
-    (.write w (string/join "\n" content))))
-
-(def write (partial write-to-file "/Users/janherich/CAD/chisel.scad"))
+(def write (partial u/write-to-file "/Users/janherich/CAD/chisel.scad"))

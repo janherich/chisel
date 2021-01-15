@@ -1,8 +1,6 @@
 (ns chisel.stl
   "STL generation namespace"
-  (:require [clojure.string :as string]
-            [clojure.java.io :as io]
-            [chisel.coordinates :as c]
+  (:require [chisel.coordinates :as c]
             [chisel.utils :as u]))
 
 (defn- facet-normal
@@ -39,9 +37,4 @@
                                                  (get points c)]))
                           faces))))
 
-;; Utility fn to write to file
-(defn write-to-file [path & content]
-  (with-open [w (io/writer path)]
-    (.write w (string/join "\n" content))))
-
-(def write (partial write-to-file "/Users/janherich/CAD/chisel.stl"))
+(def write (partial u/write-to-file "/Users/janherich/CAD/chisel.stl"))

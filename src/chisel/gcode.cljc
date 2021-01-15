@@ -1,11 +1,23 @@
 (ns chisel.gcode
   "Gcode generation for patches"
-  (:require [clojure.string :as string]
-            [clojure.java.io :as io]
-            [chisel.protocols :as protocols]
+  (:require [chisel.protocols :as protocols]
             [chisel.curves :as curves]
             [chisel.coordinates :as c]
             [chisel.utils :as u]))
+
+(def ^:private full-circle (* 2 Math/PI))
+
+(defn circular-polyline
+  "Generates circular polyline with 100 segments of diameter `r`, usefull for generating
+  skirt polylines for circular print beds"
+  ([r]
+   (circular-polyline r 0))
+  ([r offset]
+   (let [step (/ full-circle 100)]
+     (mapv (fn [angle]
+             [(* r (Math/sin angle))
+              (* r (Math/cos angle))])
+           (range (+ offset 0) (+ offset full-circle) step)))))
 
 (def ^:const max-fan-speed 255)
 
@@ -15,12 +27,11 @@
 ;; Source data for layer generation
 (comment
   {:slices-descriptor [{:source          slices-1
-                        :reversed?       true ;; optional, default false
-                        :layer-fn        (fn [segment layer-idx]) ;; optional
-                        :connection-move :print} ;; optional, default `:travel` 
+                        :connection-move :print ;; optional, default `:travel`
+                        :layer-fn        (fn [segment layer-idx])}
                        ]})
 
-;; Print object
+;; Print object with basic settings
 (def print-descriptor
   {;;layers            [{:z 0.2
    ;;                    :layer-height 0.2
@@ -29,19 +40,42 @@
    ;;                                :connection :line}
    ;;                               {:polyline   [...]
    ;;                                :connection :move}]}]
-   :skirt-polyline     [[-60 100] [75 100] [75 -100] [-60 -100] [-60 100]]
    :height-range       [0.05 0.3]
    :extrusion-rate     1    ;; extrusion rate for fine-tunning extruded amount
    :filament-diameter  1.75 ;; filament width in mm
    :line-width         0.4  ;; print line width in mm
-   :speed              150  ;; print move speed in mm/s
-   :start-speed        30   ;; start print move speed in mm/s
    :travel-speed-ratio 3/2  ;; ratio of travel speed to print speed
    :ramp-layers        4    ;; number of layers where speed is gradualy ramped
-   :print-temp         230  ;; print temperature in degrees celsius
-   :bed-temp           55   ;; bed temperature in degrees celsius
-   :fan-speed-ratio    1/2  ;; fan speed as ratio of the 100% (maximum) fan speed
    })
+
+;; Print object
+(def qqs-print-descriptor
+  (merge print-descriptor
+         {:skirt-polyline     (circular-polyline 125)
+          :speed              200  ;; print move speed in mm/s
+          :start-speed        30   ;; start print move speed in mm/s
+          :print-temp         230 ;; print temperature in degrees celsius
+          :bed-temp           55  ;; bed temperature in degrees celsius
+          :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
+          }))
+
+;; Print object
+(def cr10-print-descriptor
+  (merge print-descriptor
+         {:skirt-polyline     [[50 50] [250 50] [250 250] [50 250] [50 50]]
+          :speed              45   ;; print move speed in mm/s
+          :start-speed        25   ;; start print move speed in mm/s
+          :print-temp         230 ;; print temperature in degrees celsius
+          :bed-temp           55  ;; bed temperature in degrees celsius
+          :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
+          }))
+
+(def qqs-lw-pla-print-descriptor
+  (merge qqs-print-descriptor
+         {:print-temp     245
+          :extrusion-rate 0.45
+          :ramp-layers    20
+          :speed          100}))
 
 (defn- header
   "Gcode print header, setting positioning, temperature and priming extruder"
@@ -181,15 +215,14 @@
   (update-in layers [0 :segments]
              (fn [segments]
                (into [{:polyline        skirt-polyline
-                       :connection-move :print
+                       :connection-move :travel
                        :next-segment    1}]
                      (map #(update % :next-segment inc) segments)))))
 
 (defn generate-segment
   "Generates segment"
-  [{:keys [reversed? layer-fn] :as segment} layer-idx]
+  [{:keys [layer-fn] :as segment} layer-idx]
   (cond-> (merge default-segment segment)
-    reversed? (update :polyline rseq)
     layer-fn  (layer-fn layer-idx)))
 
 (defn generate-layers
@@ -242,9 +275,4 @@
                      (fan-speed-sequence print-descriptor)))
          footer))
 
-;; Utility fn to write to file
-(defn write-to-file [path & content]
-  (with-open [w (io/writer path)]
-    (.write w (string/join "\n" content))))
-
-(def write (partial write-to-file "/Users/janherich/CAD/chisel.gcode"))
+(def write (partial u/write-to-file "/Users/janherich/CAD/chisel.gcode"))

@@ -20,6 +20,12 @@
 (defn multiply [c v]
   (matrix/ax c v))
 
+(defn combine-matrices
+  ([c1 c2]
+   (matrix/mm c1 c2))
+  ([c1 c2 & matrices]
+   (apply matrix/mm c1 c2 matrices)))
+
 (def ^:private axis->idx {:x 0 :y 5 :z 10})
 
 (def ^:private identity-matrix
@@ -52,6 +58,16 @@
 (defn flip-matrix [axis]
   (assert (#{:x :y :z} axis) "Flip axis must be either `:x`, `:y` or `:z`")
   (scale-matrix {axis -1}))
+
+(defn rotate-matrix
+  "Rotates point in x/y plane"
+  [angle]
+  (let [cos-angle (Math/cos angle)
+        sin-angle (Math/sin angle)]
+    (native/dge 4 4 [cos-angle (- sin-angle) 0 0
+                     sin-angle cos-angle     0 0
+                     0         0             1 0
+                     0         0             0 1])))
 
 (defn linear-combination
   [t c1 c2]
