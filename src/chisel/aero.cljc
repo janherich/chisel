@@ -86,7 +86,8 @@
 (defn cubic-airfoil
   "Creates basic cubic airfoil type implementing `PAirfoil` protocol/interface, parametrized
   by leading edge radius, trailing edge boat angle and max camber position of upper/lower surfaces"
-  [{:keys [upper-le-radius upper-te-angle upper-max-camber lower-le-radius lower-te-angle lower-max-camber]}]
+  [{:keys [upper-le-radius upper-te-angle upper-max-camber
+           lower-le-radius lower-te-angle lower-max-camber]}]
   (let [upper-te-angle-rad    (Math/toRadians upper-te-angle)
         lower-te-angle-rad    (Math/toRadians lower-te-angle)
         start-point           (c/v [0 0])
@@ -114,6 +115,10 @@
                     :lower-te-angle   te-angle-half
                     :lower-max-camber max-camber})))
 
+(comment
+  (def symmetric-cubic (cambered-cubic-airfoil {:le-radius          0.4
+                                                :te-angle           12})))
+
 (defn cambered-cubic-airfoil
   "Creates cubic airfoil with given upper/lower te ratio"
   [{:keys [le-radius te-angle max-camber lower-camber-ratio] :or {max-camber 1/3}}]
@@ -126,6 +131,78 @@
                     :lower-te-angle   lower-te-angle
                     :lower-max-camber max-camber})))
 
+(comment
+  (def cubic (cambered-cubic-airfoil {:le-radius          0.42
+                                      :te-angle           10.7
+                                      :max-camber         9/40
+                                      :lower-camber-ratio 2/9})))
+
+(defn reflexed-cubic-airfoil
+  "Creates basic cubic airfoil with reflexed trailing edge implementing `PAirfoil` protocol/interface."
+  [{:keys [le-radius
+           upper-te-angle upper-max-camber upper-reflex
+           lower-te-angle lower-max-camber lower-reflex]}]
+  (let [upper-te-angle-rad    (Math/toRadians upper-te-angle)
+        lower-te-angle-rad    (Math/toRadians lower-te-angle)
+        start-point           (c/v [0 0])
+        upper-le-radius-point (c/v [0 (* 1/3 (Math/sqrt (/ le-radius 50)))])
+        upper-te-angle-point  (c/v [upper-max-camber (* (- 1 upper-max-camber) (Math/tan upper-te-angle-rad))])
+        lower-le-radius-point (c/v [0 (* -1/3 (Math/sqrt (/ le-radius 50)))])
+        lower-te-angle-point  (c/v [lower-max-camber (* -1 (- 1 lower-max-camber) (Math/tan lower-te-angle-rad))])
+        end-point             (c/v [1 0])
+        upper-te-angle-end-v  (c/difference end-point upper-te-angle-point)
+        upper-reflex-point    (c/sum (c/linear-combination upper-max-camber upper-te-angle-point end-point)
+                                     (c/scale-vector (c/orthogonal-vector upper-te-angle-end-v)
+                                                     (* (c/vector-length upper-te-angle-end-v)
+                                                        (/ upper-reflex 100))))
+        lower-te-angle-end-v  (c/difference end-point lower-te-angle-point)
+        lower-reflex-point    (c/sum (c/linear-combination lower-max-camber lower-te-angle-point end-point)
+                                     (c/scale-vector (c/orthogonal-vector lower-te-angle-end-v
+                                                                          :counterclockwise? true)
+                                                     (* (c/vector-length lower-te-angle-end-v)
+                                                        (/ lower-reflex 100))))]
+    (map->Airfoil {:upper-curve (curves/clamped-uniform-b-spline
+                                 {:control-points [start-point upper-le-radius-point upper-te-angle-point upper-reflex-point end-point]
+                                  :order          3})
+                   :lower-curve (curves/clamped-uniform-b-spline
+                                 {:control-points [start-point lower-le-radius-point lower-te-angle-point lower-reflex-point end-point]
+                                  :order          3})
+                   :code        "Reflexed_Cubic_Airfoil"})))
+
+(comment
+  (def reflexed (reflexed-cubic-airfoil {:le-radius        0.4
+                                         :upper-te-angle   7
+                                         :lower-te-angle   3
+                                         :upper-reflex     1
+                                         :lower-reflex     -2
+                                         :upper-max-camber 7/20
+                                         :lower-max-camber 4/5})))
+
+(defn reflexed-quartic-airfoil
+  "Reflexed quartic airfoil"
+  [{:keys [le-up s-bend-up s-bend-position
+           le-down downtail downtail-position]}]
+  (let [start-point    (c/v [0 0])
+        upper-le-point (c/v [0 (/ le-up 10)])
+        s-bend-point-1 (c/v [s-bend-position (/ s-bend-up 100)])
+        s-bend-point-2 (c/v [s-bend-position 0])
+        end-point      (c/v [1 0])
+        lower-le-point (c/v [0 (- (/ le-down 10))])
+        downtail-point (c/v [downtail-position (- (/ downtail 100))])]
+    (map->Airfoil {:upper-curve (curves/bezier-curve [start-point upper-le-point
+                                                      s-bend-point-1 s-bend-point-2 end-point])
+                   :lower-curve (curves/bezier-curve [start-point lower-le-point
+                                                      downtail-point end-point])
+                   :code        "Reflexed_Quartic_Airfoil"})))
+
+(comment
+  (def reflexed (reflexed-quartic-airfoil {:le-up             0.6
+                                           :s-bend-up         12
+                                           :s-bend-position   6/10
+                                           :le-down           0.5
+                                           :downtail          1
+                                           :downtail-position 3/4})))
+
 (defn test-airfoil [airfoil export?]
   (if export?
     (u/write-to-file (str "/Users/janherich/CAD/" (code airfoil) ".dat")
@@ -133,8 +210,8 @@
     (let [scaled (protocols/linear-transform airfoil (c/scale-matrix 100))]
       (os/write
        (os/generate-polygon
-        (into (protocols/polyline (upper-curve scaled) 100)
-              (rseq (protocols/polyline (lower-curve scaled) 100))))))))
+        (into (protocols/polyline (upper-curve scaled) 200)
+              (rseq (protocols/polyline (lower-curve scaled) 200))))))))
 
 (defn- transform-airfoil
   "Transforms airfoil with unit chord parallel to X axis according to given LE/TE points"
@@ -149,20 +226,11 @@
         translation  (c/translate-matrix le-point)]
     (protocols/linear-transform airfoil (c/combine-matrices translation scaling rotation))))
 
-(defn test-transform [le te]
-  (let [scaled (transform-airfoil (symmetric-cubic-airfoil {:le-radius 1.5 :te-angle 10}) le te)]
-    (os/write
-     (os/generate-polygon
-      (into (protocols/polyline (upper-curve scaled) 100)
-            (rseq (protocols/polyline (lower-curve scaled) 100)))))))
-
 (defn- prepare-control-edge [edge span section]
   (let [original-edge (protocols/linear-transform edge (c/scale-matrix span))]
     (case section
       :mirror (protocols/linear-transform original-edge (c/flip-matrix :y))
-      :full   (curves/join-curves (protocols/linear-transform (curves/invert-curve original-edge)
-                                                              (c/flip-matrix :z))
-                                  original-edge)
+      :right  (protocols/linear-transform original-edge (c/flip-matrix :z))
       original-edge)))
 
 (defn- wing-patch [airfoil-side leading-edge-curve trailing-edge-curve span section]
@@ -237,12 +305,20 @@
                                                                     :y taper})))])
       :airfoil             airfoil})))
 
+(defn- normalize-wing-curves [wing resolution]
+  (-> wing
+      (update :leading-edge-curve #(curves/axis-uniform-curve (protocols/polyline % resolution) :z))
+      (update :trailing-edge-curve #(curves/axis-uniform-curve (protocols/polyline % resolution) :z))))
+
 (defn elliptic-wing
   "Elliptic wing"
   [{:keys [airfoil taper aspect-ratio twist] :or {taper 0 twist 0}}]
   (let [half-span     (/ 1 aspect-ratio)]
-    (map->ConstantAirfoilWing
-     {:leading-edge-curve  (curves/bezier-curve [(c/v [(- half-span) 0 0])
+    (-> (map->ConstantAirfoilWing
+         {:leading-edge-curve (curves/clamped-uniform-b-spline
+                               {:control-points [(c/v [(* 11/10 (- half-span)) 0 0])
+                                                 (c/v [(- half-span) 0 0])
+                                                 (c/v [(- half-span) 0 1/10])
                                                  (protocols/linear-transform
                                                   (c/weighted (c/v [(- half-span) 0 1])
                                                               conics/WEIGHT_90)
@@ -252,65 +328,101 @@
                                                   (c/combine-matrices
                                                    (c/rotate-matrix (Math/toRadians twist))
                                                    (c/scale-matrix {:x taper
-                                                                    :y taper})))])
-      :trailing-edge-curve (curves/bezier-curve [(c/v [half-span 0 0])
-                                                 (protocols/linear-transform
-                                                  (c/weighted (c/v [half-span 0 1])
-                                                              conics/WEIGHT_90)
-                                                  (c/rotate-matrix (Math/toRadians twist)))
-                                                 (protocols/linear-transform
-                                                  (c/v [half-span 0 1])
-                                                  (c/combine-matrices
-                                                   (c/rotate-matrix (Math/toRadians twist))
-                                                   (c/scale-matrix {:x taper
-                                                                    :y taper})))])
-      :airfoil             airfoil})))
+                                                                    :y taper})))]
+                                :order          2})
+          :trailing-edge-curve (curves/clamped-uniform-b-spline
+                                {:control-points [(c/v [(* 11/10 half-span) 0 0])
+                                                  (c/v [half-span 0 0])
+                                                  (c/v [half-span 0 1/10])
+                                                  (protocols/linear-transform
+                                                   (c/weighted (c/v [half-span 0 1])
+                                                               conics/WEIGHT_90)
+                                                   (c/rotate-matrix (Math/toRadians twist)))
+                                                  (protocols/linear-transform
+                                                   (c/v [half-span 0 1])
+                                                   (c/combine-matrices
+                                                    (c/rotate-matrix (Math/toRadians twist))
+                                                    (c/scale-matrix {:x taper
+                                                                     :y taper})))]
+                                 :order          2})
+          :airfoil             airfoil})
+        (normalize-wing-curves 1000))))
 
-#_(defn flying-wing
+(defn flying-wing
   "Flying wing"
-  [{:keys [airfoil taper aspect-ratio sweep body-ratio] :or {taper 1/2 body-ratio 1/10 sweep 20}}]
+  [{:keys [airfoil taper aspect-ratio twist sweep body-ratio] :or {taper 1/2 body-ratio 2 sweep 20}}]
   (let [half-span     (/ 1 aspect-ratio)
-        
         tip-translate (Math/tan (Math/toRadians sweep))]
-    (map->ConstantAirfoilWing
-     {:leading-edge-curve  (curves/bezier-curve [(c/v [(- half-span) 0 0])
-                                                 (protocols/linear-transform
-                                                  (c/v [(- half-span) 0 1])
-                                                  (c/combine-matrices
-                                                   (c/translate-matrix [tip-translate 0 0])
-                                                   (c/scale-matrix {:x taper
-                                                                    :y taper})))])
-      :trailing-edge-curve (curves/bezier-curve [(c/v [half-span 0 0])
-                                                 (protocols/linear-transform
-                                                  (c/v [half-span 0 1])
-                                                  (c/combine-matrices
-                                                   (c/translate-matrix [tip-translate 0 0])
-                                                   (c/scale-matrix {:x taper
-                                                                    :y taper})))])
-      :airfoil             airfoil})))
+    (-> (map->ConstantAirfoilWing
+         {:leading-edge-curve  (curves/bezier-curve [(c/v [(- half-span) 0 0])
+                                                     (protocols/linear-transform
+                                                      (c/v [(- half-span) 0 1])
+                                                      (c/combine-matrices
+                                                       (c/translate-matrix [tip-translate 0 0])
+                                                       (c/rotate-matrix (Math/toRadians twist))
+                                                       (c/scale-matrix {:x taper
+                                                                        :y taper})))])
+          :trailing-edge-curve (curves/bezier-curve [(c/v [(* body-ratio half-span) 0 0])
+                                                     (c/v [half-span 0 0])
+                                                     (protocols/linear-transform
+                                                      (c/v [half-span 0 1])
+                                                      (c/combine-matrices
+                                                       (c/translate-matrix [tip-translate 0 0])
+                                                       (c/rotate-matrix (Math/toRadians twist))
+                                                       (c/scale-matrix {:x taper
+                                                                        :y taper})))])
+          :airfoil             airfoil})
+        (normalize-wing-curves 500))))
+
+(defn- shift-z [patch z]
+  (protocols/linear-transform patch (c/translate-matrix [0 0 z])))
+
+(defn fuselage-mesh []
+  #_(let ))
 
 (defn render-wing [wing]
   (os/write
    (os/generate-polyhedron
     (u/merge-triangle-meshes
-     (protocols/triangle-mesh (upper-wing-patch wing 500 :full) [200 100])
-     (protocols/triangle-mesh (lower-wing-patch wing 500 :full) [200 100])))))
+     (protocols/triangle-mesh (shift-z (upper-wing-patch wing 100 :left) 5) [1000 100])
+     (protocols/triangle-mesh (shift-z (lower-wing-patch wing 100 :left) 5) [1000 100])
+     (protocols/triangle-mesh (shift-z (upper-wing-patch wing 100 :right) -5) [1000 100])
+     (protocols/triangle-mesh (shift-z (lower-wing-patch wing 100 :right) -5) [1000 100])))))
 
 (def ^:private layers-per-mm 5)
 
-(defn- normalize-wing-curves [wing span]
-  (-> wing
-      (update :leading-edge-curve #(curves/axis-uniform-curve (protocols/polyline % span) :z))
-      (update :trailing-edge-curve #(curves/axis-uniform-curve (protocols/polyline % span) :z))))
-
 (defn wing-gcode [wing span mirror?]
-  (let [normalized-wing (normalize-wing-curves wing span)
-        top-patch       (upper-wing-patch normalized-wing span (when mirror? :mirror))
-        bottom-patch    (lower-wing-patch normalized-wing span (when mirror? :mirror))]
-    (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length normalized-wing span 0) 2)))}
+  (let [top-patch       (upper-wing-patch wing span (when mirror? :mirror :left))
+        bottom-patch    (lower-wing-patch wing span (when mirror? :mirror :left))]
+    (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length wing span 0) 2)))}
            (gcode-layers/corrugated-panel-descriptor top-patch bottom-patch
-                                                     5
+                                                     #_1 5
                                                      (* layers-per-mm span)
+                                                     200
+                                                     :skin-line-width 0.4
+                                                     :corrugate-fn
+                                                     #_(constantly [[true 1/3] [false 1/3]]) (partial gcode-layers/cutoff-corrugations 1/15)
+                                                     :modulate-curve (gcode-layers/sine-curve 1/30 10)))))
+
+(def uav-airfoil (cambered-cubic-airfoil {:le-radius          0.42
+                                          :te-angle           10.7
+                                          :max-camber         9/40
+                                          :lower-camber-ratio 2/9}))
+
+(def uav-wing (elliptic-wing {:airfoil      uav-airfoil
+                              :aspect-ratio 10
+                              :taper        1/10}))
+
+(defn wing-patches [wing span cut-range section]
+  [(curves/cut-patch (upper-wing-patch wing span section) cut-range)
+   (curves/cut-patch (lower-wing-patch wing span section) cut-range)])
+
+(defn wing-1 [section]
+  (let [[top bottom] (wing-patches uav-wing 700 [0 (/ 250 700)] section)]
+    (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length uav-wing 700 0) 2)))}
+           (gcode-layers/corrugated-panel-descriptor top bottom
+                                                     6
+                                                     (* layers-per-mm 250)
                                                      200
                                                      :skin-line-width 0.4
                                                      :corrugate-fn
@@ -318,13 +430,64 @@
 
 (comment
   (u/write-to-file
+   "/Users/janherich/CAD/uav_left_wing_1.gcode"
+   (gcode/generate-gcode (merge gcode/qqs-print-descriptor
+                                gcode/lw-pla-print-descriptor
+                                (wing-1 :left)))))
+
+(defn wing-2 [section]
+  (let [[top bottom] (wing-patches uav-wing 700 [(/ 250 700) (/ 500 700)] section)]
+    (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length uav-wing 700 (/ 250 700)) 2)))}
+           (gcode-layers/corrugated-panel-descriptor (protocols/linear-transform
+                                                      top (c/translate-matrix [0 0 (- 250)]))
+                                                     (protocols/linear-transform
+                                                      bottom (c/translate-matrix [0 0 (- 250)]))
+                                                     6
+                                                     (* layers-per-mm 250)
+                                                     200
+                                                     :skin-line-width 0.4
+                                                     :corrugate-fn
+                                                     (partial gcode-layers/cutoff-corrugations 1/15)))))
+
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/uav_left_wing_2.gcode"
+   (gcode/generate-gcode (merge gcode/qqs-print-descriptor
+                                gcode/lw-pla-print-descriptor
+                                (wing-2 :left)))))
+
+(defn wing-3 [section]
+  (let [[top bottom] (wing-patches uav-wing 700 [(/ 500 700) (/ 700 700)] section)]
+    (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length uav-wing 700 (/ 500 700)) 2)))}
+           (gcode-layers/corrugated-panel-descriptor (protocols/linear-transform
+                                                      top (c/translate-matrix [0 0 (- 500)]))
+                                                     (protocols/linear-transform
+                                                      bottom (c/translate-matrix [0 0 (- 500)]))
+                                                     6
+                                                     (* layers-per-mm 200)
+                                                     200
+                                                     :skin-line-width 0.4
+                                                     :corrugate-fn
+                                                     (partial gcode-layers/cutoff-corrugations 1/15)))))
+
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/uav_left_wing_3.gcode"
+   (gcode/generate-gcode (merge gcode/qqs-print-descriptor
+                                gcode/lw-pla-print-descriptor
+                                (wing-3 :left)))))
+
+
+(comment
+  (u/write-to-file
    "/Users/janherich/CAD/wing.gcode"
-   (gcode/generate-gcode (merge gcode/qqs-lw-pla-print-descriptor
+   (gcode/generate-gcode (merge gcode/qqs-print-descriptor
+                                gcode/lw-pla-print-descriptor
                                 (wing-gcode
-                                 (elliptic-wing {:airfoil      (lr-airfoil {:thickness 2 :camber 6})
+                                 (elliptic-wing {:airfoil      uav-airfoil
                                                  :aspect-ratio 5
                                                  :taper        1/3
                                                  :twist        -2})
-                                 150
+                                 200
                                  false)))))
 

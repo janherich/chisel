@@ -5,26 +5,6 @@
             [chisel.coordinates :as c]
             [chisel.utils :as u]))
 
-(def p1
-  (curves/bezier-patch
-   [(curves/bezier-curve [(c/v [-50 0 0]) (c/v [-50 0 150])])
-    (curves/bezier-curve [(c/v [50 0 0]) (c/v [50 0 150])])]))
-
-(def p2
-  (curves/bezier-patch
-   [(curves/bezier-curve [(c/v [-50 10 0]) (c/v [-50 10 150])])
-    (curves/bezier-curve [(c/v [50 10 0]) (c/v [50 10 150])])]))
-
-(def cartesian-p1
-  (curves/bezier-patch
-   [(curves/bezier-curve [(c/v [100 150 0]) (c/v [100 150 150])])
-    (curves/bezier-curve [(c/v [200 150 0]) (c/v [200 150 150])])]))
-
-(def cartesian-p2
-  (curves/bezier-patch
-   [(curves/bezier-curve [(c/v [100 160 0]) (c/v [100 160 150])])
-    (curves/bezier-curve [(c/v [200 160 0]) (c/v [200 160 150])])]))
-
 (defn- alternate-direction [segment layer-idx]
   (cond-> segment
     (odd? layer-idx) (update :polyline reverse)))
@@ -40,7 +20,7 @@
 (defn uniform-corrugations
   "Returns uniform corrugation distribution as sequence of `[side t]` tuples,
   where `side` is boolean indicating corrugation face curve and `t` relative point
-  on the curve in `[0 1]` interval"
+  on the curve in `[0 1]` interval. "
   [corrugations]
   (corrugations-assertion corrugations)
   (let [step (/ 1 corrugations 2)]
@@ -68,18 +48,6 @@
               (conj start)
               vec
               (conj end))))))
-
-(defn- shift-corrugations
-  "Given corrugations interval sequence, shifts all of them by given positive/negative amount.
-  Takes care of never straying beyond allowed `[0 1]` interval"
-  [corrugations shift]
-  (if (zero? shift)
-    corrugations
-    (map #(update % 1 (fn [t]
-                        (if (pos? shift)
-                          (min 1 (+ t shift))
-                          (max 0 (+ t shift)))))
-         corrugations)))
 
 (defn- distance-on-line
   "Given two points and absolute distance, returns point which lies on line between `p1` and `p2`
@@ -121,10 +89,37 @@
                             [(point 0) (point 1)]))
                      polyline-rest)}))
 
+(defn- modulate-connections-distribution
+  "Given connection distribution sequence parametric modulate curve and paramer t,
+  modulates (shifts) connection distribution sequence according to modulate curve/t
+  evaluation.
+  Modulate curve should be parametric 1d curve returning point in `[0 1]` range.
+  Takes care of never straying beyond allowed `[0 1]` interval for any connection."
+  [connections-distribution modulate-curve t]
+  (let [shift (protocols/curve-point modulate-curve t)]
+    (map #(update % 1 (fn [t]
+                        (if (pos? shift)
+                          (min 1 (+ t shift))
+                          (max 0 (+ t shift)))))
+         connections-distribution)))
+
+(defn sine-curve
+  "Returns sine curve with given frequency and amplitude, amplitude in `[0 1]` parameter ranges."
+  [amplitude frequency]
+  (u/relative-parameter-assertion amplitude)
+  (reify protocols/PParametricCurve
+    (protocols/curve-point [_ t]
+      (u/relative-parameter-assertion t)
+      (let [angle-rad (* t frequency (* 2 Math/PI))]
+        (* amplitude (Math/sin angle-rad))))
+    (protocols/polyline [this points-count]
+      (curves/resolve-curve points-count #(protocols/curve-point this %)))
+    (protocols/closed? [_] true)))
+
 (defn vertical-infill-index
-  "Given two facesheet patches, resolution and connections-dostributing sequence,
+  "Given two facesheet patches, resolution and connections-distributing sequence,
   generates index (range-tree) returning verticall infill between them,
-  optionally takes connecting distance argument (defaults to `0.10`)."
+  optionally takes connecting distance argument (defaults to `0.10`). "
   [top-patch bottom-patch resolution connections-distribution
    & {:keys [connecting-distance] :or {connecting-distance 0.20}}]
   (u/make-range-tree
@@ -152,10 +147,10 @@
 (defn corrugated-panel-descriptor
   "Generates print descriptor for corrugated sandwich panel"
   [top-patch bottom-patch corrugations layers resolution
-   & {:keys [corrugate-fn skin-line-width core-line-width]
+   & {:keys [corrugate-fn skin-line-width core-line-width modulate-curve]
       :or {corrugate-fn    uniform-corrugations
-           skin-line-width 0.25
-           core-line-width 0.4}}]
+           skin-line-width 0.3
+           core-line-width 0.5}}]
   (let [connections-distribution (corrugate-fn corrugations)
         slices (map (fn [t]
                       (let [top-polyline       (protocols/polyline
@@ -165,20 +160,68 @@
                         [(polyline->layer-slice top-polyline)
                          (polyline->layer-slice (rseq bottom-polyline))
                          (polyline->layer-slice
-                          (horizontal-corrugated-infill top-polyline bottom-polyline connections-distribution))]))
+                          (horizontal-corrugated-infill top-polyline
+                                                        bottom-polyline
+                                                        (cond-> connections-distribution
+                                                          modulate-curve
+                                                          (modulate-connections-distribution modulate-curve t))))]))
                     (layer-interval-sequence layers))]
     {:slices-descriptor [{:source (map #(get % 0) slices)
                           :line-width skin-line-width
-                          :connection-move #_:print :travel
+                          :connection-move :print #_:travel
                           :layer-fn alternate-direction}
                          {:source (map #(get % 1) slices)
                           :line-width skin-line-width
-                          :connection-move #_:print :travel
+                          :connection-move :print #_:travel
                           :layer-fn alternate-direction}
                          {:source (map #(get % 2) slices)
                           :line-width core-line-width
                           :connection-move :none
                           :layer-fn alternate-direction}]}))
+
+(defn- mirror-distribution [distribution]
+  (reverse (map #(update % 0 not) distribution)))
+
+(defn double-corrugated-panel-descriptor
+  "Generates print descriptor for double corrugated sandwich panel"
+  [top-patch bottom-patch corrugations layers resolution
+   & {:keys [corrugate-fn skin-line-width core-line-width modulate-curve]
+      :or {corrugate-fn    uniform-corrugations
+           skin-line-width 0.3
+           core-line-width 0.5}}]
+  (let [connections-distribution (corrugate-fn corrugations)
+        slices (map (fn [t]
+                      (let [top-polyline       (protocols/polyline
+                                                (protocols/patch-slice top-patch t) resolution)
+                            bottom-polyline    (protocols/polyline
+                                                (protocols/patch-slice bottom-patch t) resolution)]
+                        [(polyline->layer-slice top-polyline)
+                         (polyline->layer-slice (rseq bottom-polyline))
+                         (polyline->layer-slice
+                          (horizontal-corrugated-infill top-polyline
+                                                        bottom-polyline
+                                                        (cond-> connections-distribution
+                                                          modulate-curve
+                                                          (modulate-connections-distribution modulate-curve t))))
+                         (polyline->layer-slice
+                          (horizontal-corrugated-infill top-polyline
+                                                        bottom-polyline
+                                                        (cond-> (mirror-distribution connections-distribution)
+                                                          modulate-curve
+                                                          (modulate-connections-distribution modulate-curve t))))]))
+                    (layer-interval-sequence layers))]
+    {:slices-descriptor [{:source (map #(get % 0) slices)
+                          :line-width skin-line-width
+                          :connection-move #_print :travel}
+                         {:source (map #(get % 1) slices)
+                          :line-width skin-line-width
+                          :connection-move #_:print :travel}
+                         {:source (map #(get % 2) slices)
+                          :line-width core-line-width
+                          :connection-move :travel}
+                         {:source (map #(get % 3) slices)
+                          :line-width core-line-width
+                          :connection-move :travel}]}))
 
 (defn ribbed-panel-descriptor
   "Generates print descriptor for ribbed panel"
@@ -203,3 +246,38 @@
                           :line-width core-line-width
                           :connection-move :travel}]}))
 
+(defn ribbed-corrugated-panel-descriptor
+  "Generates print descriptor for ribbed-corrugated panel"
+  [top-patch bottom-patch rib-corrugations corrugations layers resolution
+   & {:keys [corrugate-fn skin-line-width core-line-width]
+      :or {corrugate-fn    uniform-corrugations
+           skin-line-width 0.3
+           core-line-width 0.5}}]
+  (let [rib-connections-distribution (uniform-corrugations rib-corrugations)
+        ribs-index                   (vertical-infill-index top-patch bottom-patch
+                                                            resolution rib-connections-distribution)
+        connections-distribution     (corrugate-fn corrugations)
+        slices (map (fn [t]
+                      (let [top-polyline        (protocols/polyline
+                                                 (protocols/patch-slice top-patch t) resolution)
+                            bottom-polyline     (protocols/polyline
+                                                 (protocols/patch-slice bottom-patch t) resolution)]
+                        [(polyline->layer-slice top-polyline)
+                         (polyline->layer-slice (rseq (u/search-range-tree ribs-index t)))
+                         (polyline->layer-slice
+                          (horizontal-corrugated-infill top-polyline
+                                                        bottom-polyline
+                                                        connections-distribution))]))
+                    (layer-interval-sequence layers))]
+    {:slices-descriptor [{:source (map #(get % 0) slices)
+                          :line-width skin-line-width
+                          :connection-move :travel
+                          :layer-fn alternate-direction}
+                         {:source (map #(get % 1) slices)
+                          :line-width core-line-width
+                          :connection-move :travel
+                          :layer-fn alternate-direction}
+                         {:source (map #(get % 2) slices)
+                          :line-width core-line-width
+                          :connection-move :travel
+                          :layer-fn alternate-direction}]}))

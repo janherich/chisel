@@ -79,16 +79,15 @@
       :knot-vector    [1/10 5/10 9/10]
       :order          3})))
 
+(comment
+  (os/write
+   (os/generate-polyhedron
+    (protocols/triangle-mesh hammerhead [100 100]))))
+
 (def hammerhead-inside
   (protocols/linear-transform hammerhead (c/scale-matrix {;;:x (/ 4200 4180)
                                                           :y (/ 300 280)
                                                           :z (/ 250 230)})))
-
-(defn hammerhead-section [interval x-corrugations y-corrugations]
-  (surface-infills/corrugated-surface
-   (curves/cut-patch hammerhead interval)
-   (curves/cut-patch hammerhead-inside interval)
-   x-corrugations 200 y-corrugations 200))
 
 (def small-boat
   (let [right-border-curve (curves/clamped-uniform-b-spline
@@ -105,11 +104,11 @@
         left-border-curve  (protocols/linear-transform right-border-curve (c/flip-matrix :y))
         left-bottom-curve (protocols/linear-transform left-border-curve (c/translate-matrix [100 0 0]))]
     (curves/clamped-uniform-b-spline-patch
-     {:control-curves [(curves/axis-uniform-curve (protocols/polyline left-border-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline left-bottom-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline keel-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline right-bottom-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline right-border-curve 2000) :z)]
+     {:control-curves [(curves/unify-curve left-border-curve 2000)
+                       (curves/unify-curve left-bottom-curve 2000)
+                       (curves/unify-curve keel-curve 2000)
+                       (curves/unify-curve right-bottom-curve 2000)
+                       (curves/unify-curve right-border-curve 2000 )]
       :order          2})))
 
 (def small-boat-inside
@@ -127,21 +126,35 @@
         left-border-curve  (protocols/linear-transform right-border-curve (c/flip-matrix :y))
         left-bottom-curve (protocols/linear-transform left-border-curve (c/translate-matrix [100 0 0]))]
     (curves/clamped-uniform-b-spline-patch
-     {:control-curves [(curves/axis-uniform-curve (protocols/polyline left-border-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline left-bottom-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline keel-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline right-bottom-curve 2000) :z)
-                       (curves/axis-uniform-curve (protocols/polyline right-border-curve 2000) :z)]
+     {:control-curves [(curves/unify-curve left-border-curve 2000)
+                       (curves/unify-curve left-bottom-curve 2000)
+                       (curves/unify-curve keel-curve 2000)
+                       (curves/unify-curve right-bottom-curve 2000)
+                       (curves/unify-curve right-border-curve 2000)]
       :order          2})))
 
 (defn small-boat-section
   [interval-1 interval-2 layers resolution corrugations]
-  (let [top    (protocols/linear-transform (curves/cut-patch small-boat interval-1 interval-2) (c/scale-matrix 1/2))
-        bottom (protocols/linear-transform (curves/cut-patch small-boat-inside interval-1 interval-2) (c/scale-matrix 1/2))]
+  (let [top    #_(protocols/linear-transform) (curves/cut-patch small-boat interval-1 interval-2) #_(c/scale-matrix 1)
+        bottom #_(protocols/linear-transform) (curves/cut-patch small-boat-inside interval-1 interval-2) #_(c/scale-matrix 1)]
     #_(u/triangle-mesh-surface (protocols/triangle-mesh top [100 100]))
-    (gcode-layers/corrugated-panel-descriptor top bottom corrugations layers resolution)
+    (gcode-layers/ribbed-corrugated-panel-descriptor top
+                                                    bottom
+                                                    5
+                                                    corrugations
+                                              layers
+                                              resolution
+                                              ;;:modulate-curve (gcode-layers/sine-curve 1/120 6)
+                                              )
     #_(os/write
        (os/generate-polyhedron
         (protocols/triangle-mesh top [100 100]))
        (os/generate-polyhedron
         (protocols/triangle-mesh bottom [100 100])))))
+
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/small_boat.gcode"
+   (gcode/generate-gcode (merge gcode/bigprinter-print-descriptor
+                                {:skirt-polyline (gcode/circular-polyline 150)}
+                                (small-boat-section [1/2 6/10] [0 1] 500 200 20)))))

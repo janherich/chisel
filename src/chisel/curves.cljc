@@ -42,7 +42,7 @@
   (let [denominator (dec points-count)]
     (map #(curve-fn (/ % denominator)))))
 
-(defn- resolve-curve
+(defn resolve-curve
   [points-count curve-fn]
   (into [] (resolve-curve-xf points-count curve-fn) (range points-count)))
 

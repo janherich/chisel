@@ -203,3 +203,8 @@
             b-distanced))
           (partition 3 1 (prepare-polyline polyline))))
 
+
+(defn lift-z
+  "Translates transformable in Z direction"
+  [t z]
+  (protocols/linear-transform t (c/translate-matrix [0 0 z])))

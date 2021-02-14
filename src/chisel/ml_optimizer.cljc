@@ -4,28 +4,25 @@
   (:require [uncomplicate.commons.core :refer [with-release let-release]]
             [uncomplicate.neanderthal
              [native :refer [dv dge]]
-             [core :refer [mv! mm! mm axpy! scal! transfer! rk! entry!]]
+             [core :refer [mv! mm! mm axpy! scal! transfer! rk! entry! view-ge]]
              [vect-math :refer [tanh! linear-frac!]]]))
 
 (defprotocol Parameters
   (weights [this])
   (bias [this]))
 
-(deftype FullyConnectedInference [w b h activ-fn]
+(deftype FullyConnectedInference [w b activ-fn]
   Parameters
   (weights [this] w)
   (bias [this] b)
   IFn
-  (invoke [_ x]
-    (activ-fn (axpy! -1.0 b (mv! w x h))))
   (invoke [_ x ones a]
     (activ-fn (rk! -1.0 b ones (mm! 1.0 w x 0.0 a)))))
 
 (defn fully-connected [activ-fn in-dim out-dim]
   (let-release [w    (dge out-dim in-dim)
-                bias (dv out-dim)
-                h    (dv out-dim)]
-    (->FullyConnectedInference w bias h activ-fn)))
+                bias (dv out-dim)]
+    (->FullyConnectedInference w bias activ-fn)))
 
 (defn activ-sigmoid! [x]
   (linear-frac! 0.5 (tanh! (scal! 0.5 x)) 0.5))

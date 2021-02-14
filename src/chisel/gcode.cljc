@@ -52,11 +52,23 @@
 (def qqs-print-descriptor
   (merge print-descriptor
          {:skirt-polyline     (circular-polyline 125)
-          :speed              200  ;; print move speed in mm/s
-          :start-speed        30   ;; start print move speed in mm/s
-          :print-temp         230 ;; print temperature in degrees celsius
+          :speed              200 ;; print move speed in mm/s
+          :start-speed        30  ;; start print move speed in mm/s
+          :print-temp         230 ;; full speed print temperature in degrees celsius
+          :start-print-temp   210 ;; start speed print temperature in degrees celsius
           :bed-temp           55  ;; bed temperature in degrees celsius
           :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
+          }))
+
+;; Print object
+(def bigprinter-print-descriptor
+  (merge print-descriptor
+         {:skirt-polyline        (circular-polyline 220)
+          :speed                 200  ;; print move speed in mm/s
+          :start-speed           30   ;; start print move speed in mm/s
+          :print-temp            230  ;; print temperature in degrees celsius
+          :start-print-temp      210  ;; start speed print temperature in degrees celsius
+          :ramp-layers           10   ;; slowly bring up to speed
           }))
 
 ;; Print object
@@ -65,44 +77,56 @@
          {:skirt-polyline     [[50 50] [250 50] [250 250] [50 250] [50 50]]
           :speed              45   ;; print move speed in mm/s
           :start-speed        25   ;; start print move speed in mm/s
-          :print-temp         230 ;; print temperature in degrees celsius
+          :print-temp         220 ;; print temperature in degrees celsius
           :bed-temp           55  ;; bed temperature in degrees celsius
           :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
           }))
 
-(def qqs-lw-pla-print-descriptor
-  (merge qqs-print-descriptor
-         {:print-temp     245
-          :extrusion-rate 0.45
-          :ramp-layers    20
-          :speed          100}))
+;; Filament object
+(def lw-pla-print-descriptor
+  {:print-temp     245
+   :extrusion-rate 0.45
+   :ramp-layers    20
+   :speed          100})
+
+(def petg-print-descriptor
+  {:start-print-temp 230
+   :print-temp       250})
+
+(defn- format-temperature
+  "Formats temperature setting string"
+  [temp-celsius]
+  (format "S%.1f" (double temp-celsius)))
 
 (defn- header
   "Gcode print header, setting positioning, temperature and priming extruder"
-  [{:keys [bed-temp print-temp]}]
+  [{:keys [bed-temp print-temp start-print-temp]}]
   (str "M82\n" ;; Absolute extrusion mode
        "G21\n" ;; Programming in millimeters
        "G90\n" ;; Absolute positioning
        "M107 T0\n" ;; Turn off cooling fan
-       (str "M190 S"(format "%.1f" (double bed-temp)) "\n") ;; Set bed temperature
-       (str "M109 S"(format "%.1f" (double print-temp)) " T0\n") ;; Set hot-end temperature
+       (when bed-temp
+         (str "M190 " (format-temperature bed-temp) "\n")) ;; Set bed temperature
+       (str "M109 " (format-temperature (or start-print-temp print-temp)) " T0\n") ;; Set hot-end temperature
        "G28\n" ;; Home all axes
        "G92 E0\n" ;; Reset extruder origin
        "G1 F200 E3\n" ;; Extrude 3mm of filament (priming extruder)
        "G92 E0\n" ;; Reset extruder origin
        "M83\n")) ;; Relative extrusion mode
 
-(def ^:private footer
-  (str "M140 S0\n" ;; Set bed temperature to 0 and continue without waiting
+(defn- footer
+  "Gcode print footer, turning of heaters, etc."
+  [{:keys [bed-temp]}]
+  (str (when bed-temp "M140 S0\n") ;; Set bed temperature to 0 and continue without waiting
        "M107 T0\n" ;; Turn off cooling fan
        "M104 S0\n" ;; Set hot-end temperature to 0 and continue without waiting
-       "G92 E0\n" ;; Reset exturder origin
-       "G91\n" ;; Relative positioning
-       "G1 E-1 F300\n" ;; Retract bit of filament
+       "G92 E0\n"  ;; Reset exturder origin
+       "G91\n"     ;; Relative positioning
+       "G1 E-1 F300\n"                  ;; Retract bit of filament
        "G1 Z+0.5 E-5 X-20 Y-20 F9000\n" ;; Move print head away from printed object
-       "G28 X0 Y0\n" ;; Home all axes
-       "M84\n" ;; Turn off steppers
-       "G90\n" ;; Revert to absolute positioning
+       "G28 X0 Y0\n"                    ;; Home all axes
+       "M84\n"                          ;; Turn off steppers
+       "G90\n"   ;; Revert to absolute positioning
        "M82\n")) ;; Absolute extrusion mode
 
 (defn- mm-min-feedrate
@@ -113,10 +137,22 @@
 (defn- layers-speed-sequence
   "Lazy sequence of speed for each layer in mm/s units"
   [{:keys [start-speed speed ramp-layers]}]
-  (let [speed-diff   (- speed start-speed)
-        speed-step   (/ speed-diff ramp-layers)]
-    (concat (range start-speed (+ speed speed-step) speed-step)
-            (repeat speed))))
+  (if start-speed
+    (let [speed-diff   (- speed start-speed)
+          speed-step   (/ speed-diff ramp-layers)]
+      (concat (range start-speed (+ speed speed-step) speed-step)
+              (repeat speed)))
+    (repeat speed)))
+
+(defn layers-temp-sequence
+  "Lazy sequence of print temperature settings for each layer in celsius units"
+  [{:keys [start-print-temp print-temp ramp-layers]}]
+  (if start-print-temp
+    (let [temp-diff (- print-temp start-print-temp)
+          temp-step (/ temp-diff ramp-layers)]
+      (concat (range start-print-temp (+ print-temp temp-step) temp-step)
+              (repeat nil)))
+    (repeat nil)))
 
 (defn- format-fan-speed
   "Converts fan speed in `[0-1]` ratio to `S0-255` fan speed string"
@@ -197,14 +233,16 @@
   generates g-code for layer"
   [{:keys [height-range travel-speed-ratio] :as print-descriptor}
    {:keys [z layer-height segments] :as layer-descriptor}
-   print-speed fan-speed]
+   print-speed print-temp-setting fan-speed]
   (let [travel-speed    (* print-speed travel-speed-ratio)]
     (assert (<= (first height-range) layer-height (last height-range))
             (format "Line height must be within allowed range, layer-height: %s" layer-height))
     (apply str
            (cond-> ""
              fan-speed
-             (str "M106 " (format-fan-speed fan-speed) "\n"))
+             (str "M106 " (format-fan-speed fan-speed) "\n")
+             print-temp-setting
+             (str "M104 " (format-temperature print-temp-setting) "\n"))
            (change-layer z (first segments) travel-speed)
            (apply str (map (partial segment-gcode print-descriptor layer-height print-speed travel-speed segments)
                            segments)))))
@@ -261,7 +299,7 @@
   [{:keys [layers skirt-polyline] :as print-descriptor}]
   (let [layers (if layers layers (generate-layers print-descriptor))]
     (cond-> layers
-        skirt-polyline (prepend-skirt skirt-polyline))))
+      skirt-polyline (prepend-skirt skirt-polyline))))
 
 (defn generate-gcode
   "Generates Gcode"
@@ -272,7 +310,8 @@
                 (map (partial layer-gcode print-descriptor)
                      (layers-sequence print-descriptor)
                      (layers-speed-sequence print-descriptor)
+                     (layers-temp-sequence print-descriptor)
                      (fan-speed-sequence print-descriptor)))
-         footer))
+         (footer print-descriptor)))
 
 (def write (partial u/write-to-file "/Users/janherich/CAD/chisel.gcode"))

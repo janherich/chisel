@@ -54,33 +54,56 @@
      [(curves/unify-curve left-deck-curve overall-length)
       (curves/unify-curve right-deck-curve overall-length)])))
 
+(defn render []
+  (os/write
+   (os/generate-polyhedron
+    (protocols/triangle-mesh low-volume-sup [100 100]))
+   (os/generate-polyhedron
+    (protocols/triangle-mesh low-volume-sup-deck [100 100]))))
 
 (def ^:private layers-per-cm 50)
 
 (defn sup-top []
   (let [face-1 (protocols/linear-transform
                 (curves/cut-patch low-volume-sup [1/2 1])
-                (c/translate-matrix [0 0 (- (/ (* 10 length-cm) 2))]))
+                (c/combine-matrices (c/scale-matrix 3/5)
+                                    (c/translate-matrix [0 0 (- (/ (* 10 length-cm) 2))])))
         face-2 (protocols/linear-transform
                 (curves/cut-patch low-volume-sup-deck [1/2 1])
-                (c/translate-matrix [0 0 (- (/ (* 10 length-cm) 2))]))]
-    (merge (gcode-layers/corrugated-panel-descriptor face-1 face-2 20
-                                                     (* layers-per-cm (/ length-cm 2))
-                                                     200)
-           {:skirt-polyline (gcode/circular-polyline 350 0)})
+                (c/combine-matrices (c/scale-matrix 3/5)
+                                    (c/translate-matrix [0 0 (- (/ (* 10 length-cm) 2))])))]
+    (merge (gcode-layers/corrugated-panel-descriptor face-1
+                                                     face-2
+                                                     10
+                                                     (* layers-per-cm (/ (* 3/5 length-cm) 2))
+                                                     200
+                                                     :corrugate-fn (partial gcode-layers/cutoff-corrugations 1/20)
+                                                     :modulate-curve (gcode-layers/sine-curve 1/40 15))
+           {:skirt-polyline (gcode/circular-polyline 210 0)})
     #_(os/write
      (os/generate-polyhedron
       (protocols/triangle-mesh face-1 [100 100]))
      (os/generate-polyhedron
       (protocols/triangle-mesh face-2 [100 100])))))
 
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/SUP_top.gcode"
+   (gcode/generate-gcode (merge gcode/qqs-print-descriptor (sup-top)))))
+
 (defn sup-bottom []
-  (let [face-1 (curves/cut-patch low-volume-sup [0 1/2])
-        face-2 (curves/cut-patch low-volume-sup-deck [0 1/2])]
-    (merge (gcode-layers/corrugated-panel-descriptor face-1 face-2 20
-                                                     (* layers-per-cm (/ length-cm 2))
-                                                     200)
-           {:skirt-polyline (gcode/circular-polyline 350 0)})
+  (let [face-1 (protocols/linear-transform (curves/cut-patch low-volume-sup [0 1/2])
+                                           (c/scale-matrix 3/5))
+        face-2 (protocols/linear-transform (curves/cut-patch low-volume-sup-deck [0 1/2])
+                                           (c/scale-matrix 3/5))]
+    (merge (gcode-layers/corrugated-panel-descriptor face-1
+                                                     face-2
+                                                     10
+                                                     (* layers-per-cm (/ (* 3/5 length-cm) 2))
+                                                     200
+                                                     :corrugate-fn (partial gcode-layers/cutoff-corrugations 1/20)
+                                                     :modulate-curve (gcode-layers/sine-curve 1/40 15))
+           {:skirt-polyline (gcode/circular-polyline 210 0)})
     #_(os/write
      (os/generate-polyhedron
       (protocols/triangle-mesh face-1 [100 100]))
