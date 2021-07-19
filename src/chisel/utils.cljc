@@ -10,10 +10,23 @@
   (with-open [w (io/writer path)]
     (.write w (string/join "\n" content))))
 
+(defn round
+  "Rounds coordinate to 3 decimal places"
+  [n] (Double. (format "%.3f" (double n))))
+
+(defn abs
+  "Returns absolute value of number"
+  [n] (max n (- n)))
+
+(defn relative-parameter-check
+  "Checks whether parameter is in relative [0 1] range"
+  [t]
+  (>= 1 t 0))
+
 (defn relative-parameter-assertion
   "Asserts relative parameter value"
   [t]
-  (assert (>= 1 t 0)
+  (assert (relative-parameter-check t)
           (format "parameter `t` has to be in (inclusive) range [0 1], :t = %s" t)))
 
 (defn merge-triangle-meshes
@@ -171,35 +184,43 @@
 
 (defn prepare-polyline [polyline]
   (let [first-point (first polyline)
-        last-point  (peek polyline)]
-    (let [second-point  (second polyline)
-          butlast-point (peek (pop polyline))]
-      (if (= first-point last-point)
-        (into [butlast-point] (conj polyline second-point))
-        (let [prepend-point (c/sum first-point (c/difference first-point second-point))
-              append-point  (c/sum last-point (c/difference last-point butlast-point))]
-          (into [prepend-point] (conj polyline append-point)))))))
+        last-point  (peek polyline)
+        second-point  (second polyline)
+        butlast-point (peek (pop polyline))]
+    (if (= first-point last-point)
+      (into [butlast-point] (conj polyline second-point))
+      (let [prepend-point (c/sum first-point (c/difference first-point second-point))
+            append-point  (c/sum last-point (c/difference last-point butlast-point))]
+        (into [prepend-point] (conj polyline append-point))))))
 
 (defn distanced-path
   "Returns polyline distance by perpendicular distance from original polyline vector"
   [polyline distance]
   (mapv (fn [[a b c]]
-          (let [a-orthogonal   (c/orthogonal-vector
-                                (c/scale-vector (c/difference a b) distance))
-                c-orthogonal   (c/orthogonal-vector
-                                (c/scale-vector (c/difference b c) distance))
-                orthogonal-sum (c/sum a-orthogonal c-orthogonal)
+          (let [a-orthogonal          (c/orthogonal-vector
+                                       (c/scale-vector (c/difference a b) distance))
+                c-orthogonal          (c/orthogonal-vector
+                                       (c/scale-vector (c/difference b c) distance))
+                orthogonal-sum        (c/sum a-orthogonal c-orthogonal)
+                orthogonal-sum-length (c/vector-length orthogonal-sum)
                 b-distanced    (c/sum
                                 b
-                                (if (= a-orthogonal c-orthogonal)
+                                (cond
+                                  ;; first special case, all three points lay on the straight line
+                                  (= a-orthogonal c-orthogonal)
                                   a-orthogonal
+                                  ;; second special case, all three points lay on same line bend 180deg at center (b) point
+                                  (zero? orthogonal-sum-length)
+                                  (c/orthogonal-vector a-orthogonal)
+                                  ;; normal case, calculate orthogonal distance from center (b) point
+                                  :else
                                   (c/scale-vector orthogonal-sum
                                                   (Math/abs (/ distance
                                                                (Math/cos
                                                                 (Math/atan (/ (c/vector-length
                                                                                (c/difference a-orthogonal
                                                                                              c-orthogonal))
-                                                                              (c/vector-length orthogonal-sum)))))))))]
+                                                                              orthogonal-sum-length))))))))]
             b-distanced))
           (partition 3 1 (prepare-polyline polyline))))
 

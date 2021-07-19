@@ -33,19 +33,13 @@
 
 ;; Print object with basic settings
 (def print-descriptor
-  {;;layers            [{:z 0.2
-   ;;                    :layer-height 0.2
-   ;;                    :segments [{:polyline   [...]
-   ;;                                :line-width 0.3
-   ;;                                :connection :line}
-   ;;                               {:polyline   [...]
-   ;;                                :connection :move}]}]
-   :height-range       [0.05 0.3]
+  {:height-range       [0.05 0.4]
    :extrusion-rate     1    ;; extrusion rate for fine-tunning extruded amount
-   :filament-diameter  1.75 ;; filament width in mm
+   :filament-diameter  1.75 ;; filament diameter in mm
    :line-width         0.4  ;; print line width in mm
    :travel-speed-ratio 3/2  ;; ratio of travel speed to print speed
    :ramp-layers        4    ;; number of layers where speed is gradualy ramped
+   :first-layer-height 0.3  ;; layer height of the first layer, usually thickner for better bed adhesion on uneven beds
    })
 
 ;; Print object
@@ -58,17 +52,33 @@
           :start-print-temp   210 ;; start speed print temperature in degrees celsius
           :bed-temp           55  ;; bed temperature in degrees celsius
           :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
+          :fan-start-layer    3 ;; start fan from 4th layer (indexing from zero)
           }))
 
 ;; Print object
 (def bigprinter-print-descriptor
   (merge print-descriptor
-         {:skirt-polyline        (circular-polyline 220)
+         {:skirt-polyline        (circular-polyline 225)
           :speed                 200  ;; print move speed in mm/s
+          :start-speed           20   ;; start print move speed in mm/s
+          :print-temp            230  ;; print temperature in degrees celsius
+          :start-print-temp      210  ;; start speed print temperature in degrees celsius
+          :ramp-layers           10   ;; slowly bring up to speed
+          :fan-speed-ratio       1 ;; fan speed as ratio of the 100% (maximum) fan speed
+          :fan-start-layer       4 ;; start fan from 4th layer (indexing from zero)
+          }))
+
+;; Print object
+(def deltav1-print-descriptor
+  (merge print-descriptor
+         {:skirt-polyline        (circular-polyline 175)
+          :speed                 120  ;; print move speed in mm/s
           :start-speed           30   ;; start print move speed in mm/s
           :print-temp            230  ;; print temperature in degrees celsius
           :start-print-temp      210  ;; start speed print temperature in degrees celsius
           :ramp-layers           10   ;; slowly bring up to speed
+          :fan-speed-ratio       1  ;; fan speed as ratio of the 100% (maximum) fan speed
+          :fan-start-layer       4    ;; start fan from 4th layer (indexing from zero)
           }))
 
 ;; Print object
@@ -80,6 +90,7 @@
           :print-temp         220 ;; print temperature in degrees celsius
           :bed-temp           55  ;; bed temperature in degrees celsius
           :fan-speed-ratio    1/2 ;; fan speed as ratio of the 100% (maximum) fan speed
+          :fan-start-layer    2 ;; start fan from 3rd layer (indexing from zero)
           }))
 
 ;; Filament object
@@ -89,9 +100,38 @@
    :ramp-layers    20
    :speed          100})
 
+(def gonzales-pla-print-descriptor
+  {:print-temp       230
+   :start-print-temp 210
+   :speed            160})
+
 (def petg-print-descriptor
   {:start-print-temp 230
    :print-temp       250})
+
+(def abs-print-descriptor
+  {:start-print-temp 240
+   :print-temp       260
+   :fan-speed-ratio  nil ;; 1/4
+   :speed            150
+   ;;:fan-start-layer  8
+   })
+
+(def pa12-gf-print-descriptor
+  {:start-print-temp 270
+   :print-temp       280
+   :fan-speed-ratio  nil
+   :start-speed      20
+   :speed            150
+   :ramp-layers      15})
+
+(def ca-pet-print-descriptor
+  {:start-print-temp 230
+   :print-temp       240
+   :fan-speed-ratio  nil
+   :start-speed      30
+   :speed            60
+   :ramp-layers      5})
 
 (defn- format-temperature
   "Formats temperature setting string"
@@ -162,8 +202,8 @@
 (defn- fan-speed-sequence
   "Lazy sequence of fan speeds for each layer in 0-1 range ratios - `nil` for layers
   where no fan speed setting is necessary"
-  [{:keys [fan-speed-ratio]}]
-  (concat [nil fan-speed-ratio] (repeat nil)))
+  [{:keys [fan-speed-ratio fan-start-layer] :or {fan-start-layer 1}}]
+  (concat (repeat fan-start-layer nil) [fan-speed-ratio] (repeat nil)))
 
 (defn- format-motion-coordinate
   "Formats motion coordinate to 3 decimal places"
@@ -253,15 +293,24 @@
   (update-in layers [0 :segments]
              (fn [segments]
                (into [{:polyline        skirt-polyline
-                       :connection-move :travel
+                       :connection-move :print
                        :next-segment    1}]
                      (map #(update % :next-segment inc) segments)))))
+
+(defn- adjust-first-layer-widths
+  "Thicker first layer to promote better bed adhesion"
+  [layers first-layer-height line-width]
+  (let [original-first-layer-height (get-in layers [0 :layer-height])
+        height-difference           (- first-layer-height original-first-layer-height)]
+    (mapv (fn [layer]
+            (update layer :z + height-difference))
+          (assoc-in layers [0 :layer-height] first-layer-height))))
 
 (defn generate-segment
   "Generates segment"
   [{:keys [layer-fn] :as segment} layer-idx]
   (cond-> (merge default-segment segment)
-    layer-fn  (layer-fn layer-idx)))
+    layer-fn (layer-fn layer-idx)))
 
 (defn generate-layers
   "Generate layers from slices specification"
@@ -296,10 +345,11 @@
   "Returns layer sequence - in case `:layers` key is present in the print-descriptor, 
   extracts it, if not, slices layers based on `:slices` key.
   Takes care of prepending skirt-polyline to the first layer as well"
-  [{:keys [layers skirt-polyline] :as print-descriptor}]
+  [{:keys [layers skirt-polyline line-width first-layer-height] :as print-descriptor}]
   (let [layers (if layers layers (generate-layers print-descriptor))]
     (cond-> layers
-      skirt-polyline (prepend-skirt skirt-polyline))))
+      skirt-polyline (prepend-skirt skirt-polyline)
+      first-layer-height (adjust-first-layer-widths first-layer-height line-width))))
 
 (defn generate-gcode
   "Generates Gcode"

@@ -131,11 +131,11 @@
                     :lower-te-angle   lower-te-angle
                     :lower-max-camber max-camber})))
 
-(comment
-  (def cubic (cambered-cubic-airfoil {:le-radius          0.42
-                                      :te-angle           10.7
-                                      :max-camber         9/40
-                                      :lower-camber-ratio 2/9})))
+#_(comment)
+(def cubic (cambered-cubic-airfoil {:le-radius          0.42
+                                    :te-angle           10.7
+                                    :max-camber         9/40
+                                    :lower-camber-ratio 2/9}))
 
 (defn reflexed-cubic-airfoil
   "Creates basic cubic airfoil with reflexed trailing edge implementing `PAirfoil` protocol/interface."
@@ -395,7 +395,11 @@
   (let [top-patch       (upper-wing-patch wing span (when mirror? :mirror :left))
         bottom-patch    (lower-wing-patch wing span (when mirror? :mirror :left))]
     (merge {:skirt-polyline (gcode/circular-polyline (+ 5 (/ (chord-length wing span 0) 2)))}
-           (gcode-layers/corrugated-panel-descriptor top-patch bottom-patch
+           (gcode-layers/closed-ribbed-panel-descriptor top-patch bottom-patch
+                                                        (int (/ span 20))
+                                                        (* layers-per-mm span)
+                                                        200)
+           #_(gcode-layers/corrugated-panel-descriptor top-patch bottom-patch
                                                      #_1 5
                                                      (* layers-per-mm span)
                                                      200

@@ -61,14 +61,22 @@
 
 (defn hull-volume
   "Calculates volume of hull composed of parallel flat slices in the X/Y plane,
-  optionally cut in the y-direction"
+  optionally cut in the y-direction, together with relative parameter telling where is the
+  mid-point of volume distribution on Z axis."
   ([hull-patch hull-slices-count slice-resolution]
    (hull-volume hull-patch hull-slices-count slice-resolution nil))
   ([hull-patch hull-slices-count slice-resolution y-cut]
-   (let [hull-step   (/ 1 hull-slices-count)
-         hull-slices (map #(protocols/patch-slice hull-patch %)
-                          (range 0 (+ 1 hull-step) hull-step))]
-     (reduce (fn [acc [slice-1 slice-2]]
-               (+ acc (prismatoid-volume slice-1 slice-2 slice-resolution y-cut)))
-             0
-             (partition 2 1 hull-slices)))))
+   (let [hull-step     (/ 1 hull-slices-count)
+         hull-slices   (map #(protocols/patch-slice hull-patch %)
+                            (range 0 (+ 1 hull-step) hull-step))
+         slice-volumes (map (fn [[slice-1 slice-2]]
+                              (prismatoid-volume slice-1 slice-2 slice-resolution y-cut))
+                            (partition 2 1 hull-slices))
+         hull-volume   (reduce + 0 slice-volumes)
+         mid-point     (reduce (fn [[current-volume current-param] slice-volume]
+                                 (if (> current-volume (/ hull-volume 2))
+                                   (reduced (/ current-param hull-slices-count))
+                                   [(+ current-volume slice-volume) (inc current-param)]))
+                               [0 0] slice-volumes)]
+     {:hull-volume hull-volume
+      :mid-point   mid-point})))

@@ -267,11 +267,15 @@
                                         end-range   (/ new-length overall-length)
                                         diff        (- end-range start-range)]
                                     [(conj ranges {:range          [start-range end-range]
-                                                   :interpolate-fn (fn [t polyline]
-                                                                     (c/linear-combination (/ (- t start-range)
-                                                                                              diff)
-                                                                                           (get polyline idx)
-                                                                                           (get polyline (inc idx))))})
+                                                   :interpolate-fn (if (zero? diff)
+                                                                     ;; This can happen if part of the curve between idx and (inc idx) forms a cusp
+                                                                     ;; and idx = (inc idx), so the line length between them is zero
+                                                                     (fn [_ _] (get polyline idx))
+                                                                     (fn [t polyline]
+                                                                       (c/linear-combination (/ (- t start-range)
+                                                                                                diff)
+                                                                                             (get polyline idx)
+                                                                                             (get polyline (inc idx)))))})
                                      new-length
                                      (inc idx)]))
                                 [[] 0 0]
@@ -510,6 +514,30 @@
   [{:keys [slice-fn] :as patch}]
   (assoc patch :slice-fn (fn [curves t]
                            (slice-fn curves (- 1 t)))))
+
+(defn patch-part
+  "Returns cut portions of  patch according to division defined
+  by number of parts and current part index (zero based indexing).
+  Optionally takes `:y-offset` to translate cut-portions and `:mid-point`
+  relative arguments, which determines threshold where cut portion should
+  be flipped upside down.
+  Takes care of always zeroing the piece on Z axis."
+  [patch number-of-parts part-idx & {:keys [y-offset mid-point]
+                                     :or {y-offset 0}}]
+  (let [end        (- number-of-parts part-idx)
+        start      (dec end)
+        interval   [(/ start number-of-parts) (/ end number-of-parts)]
+        flip?      (and mid-point (< (first interval) mid-point))
+        patch-part (if flip?
+                     (protocols/linear-transform (reverse-patch (cut-patch patch interval))
+                                                 (c/combine-matrices (c/flip-matrix :z)
+                                                                     (c/translate-matrix [0 y-offset 0])))
+                     (protocols/linear-transform (cut-patch patch interval)
+                                                 (c/translate-matrix [0 y-offset 0])))
+        start-z    (u/round ((protocols/patch-point patch-part 0 0) 2))]
+    (if (zero? start-z)
+      patch-part
+      (protocols/linear-transform patch-part (c/translate-matrix [0 0 (- start-z)])))))
 
 (defn mapped-curve
   "Map curve to patch"

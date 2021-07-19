@@ -9,92 +9,95 @@
             [chisel.gcode :as gcode]
             [chisel.gcode-layers :as gcode-layers]))
 
-(def ^:private length-cm 44)
+(def ^:private paddle-length 300)
 
-(def sup-blade
-  (let [overall-length          (* 10 length-cm)
+(def ^:private paddle-width  100)
+
+(def ^:private shaft-r 10)
+
+(def ^:private paddle-parts 2)
+
+(def ^:private paddle-mid-point 1/2)
+
+(def ^:private mid-point-absolute (* paddle-length paddle-mid-point))
+
+(def ^:private part-length (/ paddle-length paddle-parts))
+
+(def sup-blade-top
+  (let [half-width              (/ paddle-width 2)
         right-border-curve      (curves/clamped-uniform-b-spline
-                                 {:control-points [(c/v [0 80 0])
-                                                   (c/v [0 80 200])
-                                                   (c/v [0 70 250])
-                                                   (c/v [0 15 400])
-                                                   (c/v [0 15 440])]
+                                 {:control-points [(c/v [0 half-width 0])
+                                                   (c/v [0 half-width (* paddle-length 5/11)])
+                                                   (c/v [0 (* half-width 7/8) (* paddle-length 25/44)])
+                                                   (c/v [0 shaft-r (* paddle-length 10/11)])
+                                                   (c/v [0 shaft-r paddle-length])]
                                   :order 3})
         right-border-lift-curve (curves/clamped-uniform-b-spline
-                                 {:control-points [(c/v [0 70 0])
-                                                   (c/v [4 70 0])
-                                                   (c/v [5 70 200])
-                                                   (c/v [7 70 250])
-                                                   (c/v [15 15 400])
-                                                   (c/v [15 15 440])]
+                                 {:control-points [(c/v [0 (* half-width 7/8) 0])
+                                                   (c/v [4 (* half-width 7/8) 0])
+                                                   (c/v [5 (* half-width 7/8) (* paddle-length 5/11)])
+                                                   (c/v [7 (* half-width 7/8) (* paddle-length 25/44)])
+                                                   (c/v [shaft-r shaft-r (* paddle-length 10/11)])
+                                                   (c/v [shaft-r shaft-r paddle-length])]
                                   :order 3})
         spine-curve             (curves/clamped-uniform-b-spline
                                  {:control-points [(c/v [0 0 0])
                                                    (c/v [4 0 0])
-                                                   (c/v [10 0 200])
-                                                   (c/v [10 0 250])
-                                                   (c/v [15 0 400])
-                                                   (c/v [15 0 440])]
+                                                   (c/v [(* shaft-r 2/3) 0 (* paddle-length 5/11)])
+                                                   (c/v [(* shaft-r 2/3) 0 (* paddle-length 25/44)])
+                                                   (c/v [shaft-r 0 (* paddle-length 10/11)])
+                                                   (c/v [shaft-r 0 paddle-length])]
                                   :order          3})
         left-border-curve       (protocols/linear-transform right-border-curve (c/flip-matrix :y))
         left-border-lift-curve  (protocols/linear-transform right-border-lift-curve (c/flip-matrix :y))]
     (curves/clamped-b-spline-patch
-     {:control-curves [(curves/unify-curve left-border-curve overall-length)
+     {:control-curves [(curves/unify-curve left-border-curve paddle-length)
                        (with-meta
-                         (curves/unify-curve left-border-lift-curve overall-length)
+                         (curves/unify-curve left-border-lift-curve paddle-length)
                          {:weight conics/WEIGHT_90})
-                       (curves/unify-curve spine-curve overall-length)
+                       (curves/unify-curve spine-curve paddle-length)
                        (with-meta
-                         (curves/unify-curve right-border-lift-curve overall-length)
+                         (curves/unify-curve right-border-lift-curve paddle-length)
                          {:weight conics/WEIGHT_90})
-                       (curves/unify-curve right-border-curve overall-length)]
+                       (curves/unify-curve right-border-curve paddle-length)]
       :knot-vector    [1/2 1/2]
       :order          2})))
 
-(def sup-blade-outline
-  (protocols/linear-transform sup-blade (c/scale-matrix {:y 0})))
+(def sup-blade-bottom
+  (protocols/linear-transform sup-blade-top (c/flip-matrix :x)))
 
-(def ^:private layers-per-cm 40)
+(defn paddle-render []
+  (os/write
+   (os/generate-polyhedron
+    (protocols/triangle-mesh sup-blade-top [100 100]))
+   (os/generate-polyhedron
+    (protocols/triangle-mesh sup-blade-bottom [100 100]))))
 
-(defn blade-top-part []
-  (let [face-1 (protocols/linear-transform
-                (curves/cut-patch sup-blade [1/2 1])
-                (c/translate-matrix [150 140 -220]))
-        face-2 (protocols/linear-transform
-                (curves/cut-patch sup-blade [1/2 1])
-                (c/combine-matrices
-                 (c/translate-matrix [150 140 -220])
-                 (c/flip-matrix :x)))]
-    (merge (gcode-layers/corrugated-panel-descriptor face-1 face-2 20
-                                                     (* layers-per-cm 22)
-                                                     200)
-           {:skirt-polyline [[50 50] [250 50] [250 250] [50 250] [50 50]]})
-    #_(os/write
-       (os/generate-polyhedron
-        (protocols/triangle-mesh face-1 [100 100]))
-       (os/generate-polyhedron
-        (protocols/triangle-mesh face-2 [100 100])))))
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/paddle_top.gcode"
+   (gcode/generate-gcode (merge gcode/deltav1-print-descriptor
+                                (gcode-layers/corrugated-panel
+                                 (curves/patch-part sup-blade-top paddle-parts 0
+                                                    :mid-point paddle-mid-point)
+                                 (curves/patch-part sup-blade-bottom paddle-parts 0
+                                                    :mid-point paddle-mid-point)
+                                 :corrugate-fn     gcode-layers/sine-corrugations
+                                 :corrugation-size 10
+                                 :core-line-width  45/100
+                                 :skin-line-width  35/100)))))
 
-(defn blade-bottom-part []
-  (let [face-1 (protocols/linear-transform
-                (curves/reverse-patch
-                 (curves/cut-patch sup-blade [0 1/2]))
-                (c/combine-matrices
-                 (c/translate-matrix [150 140 220])
-                 (c/flip-matrix :z)))
-        face-2 (protocols/linear-transform
-                (curves/reverse-patch
-                 (curves/cut-patch sup-blade [0 1/2]))
-                (c/combine-matrices
-                 (c/translate-matrix [150 140 220])
-                 (c/flip-matrix :x)
-                 (c/flip-matrix :z)))]
-    (merge (gcode-layers/corrugated-panel-descriptor face-1 face-2 20
-                                                     (* layers-per-cm 22)
-                                                     200)
-           {:skirt-polyline [[50 50] [250 50] [250 250] [50 250] [50 50]]})
-    #_(os/write
-       (os/generate-polyhedron
-        (protocols/triangle-mesh face-1 [100 100]))
-       (os/generate-polyhedron
-        (protocols/triangle-mesh face-2 [100 100])))))
+(comment
+  (u/write-to-file
+   "/Users/janherich/CAD/paddle_bottom.gcode"
+   (gcode/generate-gcode (merge gcode/deltav1-print-descriptor
+                                (gcode-layers/corrugated-panel
+                                 (curves/patch-part sup-blade-top paddle-parts 1
+                                                    :mid-point paddle-mid-point)
+                                 (curves/patch-part sup-blade-bottom paddle-parts 1
+                                                    :mid-point paddle-mid-point)
+                                 :corrugate-fn     gcode-layers/sine-corrugations
+                                 :corrugation-size 10
+                                 :core-line-width  45/100
+                                 :skin-line-width  35/100)))))
+

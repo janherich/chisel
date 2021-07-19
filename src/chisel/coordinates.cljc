@@ -21,6 +21,7 @@
   (matrix/ax c v))
 
 (defn combine-matrices
+  ([c] c)
   ([c1 c2]
    (matrix/mm c1 c2))
   ([c1 c2 & matrices]
